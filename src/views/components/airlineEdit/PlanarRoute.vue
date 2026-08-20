@@ -7,7 +7,9 @@
 		<!-- 头部 -->
 		<div class="wayline-edit-header">
 			<div class="wayline-edit-header-left">
-				<el-button type="primary" :disabled="isCalculating || isImporting || !hasRoute" @click="handleSave">
+				<el-icon style="cursor: pointer" @click="handleBack"><ArrowLeftBold /></el-icon>
+				<div class="divider"></div>
+				<el-button type="primary" style="margin-left: 15px" :disabled="isCalculating || isImporting || !hasRoute" @click="handleSave">
 					<template #icon>
 						<el-icon style="cursor: pointer"><Files /></el-icon>
 					</template>
@@ -26,17 +28,24 @@
 
 		<div class="planar-content">
 	<PlanarRouteConfigPanel
-		:fly-point-status="flyPointStatus"
-		:is-oblique-mode="isObliqueMode"
-		:photo-trigger-options="photoTriggerOptions"
-		@change="recalculateRoute"
-		@update-fly-point="updateFlyPoint"
-		@update-climb-type="updateClimbType"
-		@change-line-angle="changeLineAngle"
-		@line-angle-slider-start="beginLineAngleSliderInteraction"
-		@line-angle-slider-input="handleLineAngleSliderInput"
-		@line-angle-slider-change="handleLineAngleSliderChange"
-	/>
+			:fly-point-status="flyPointStatus"
+			:is-oblique-mode="isObliqueMode"
+			:photo-trigger-options="photoTriggerOptions"
+			:has-polygon="hasPolygon"
+			:is-drawing-hole="isDrawingHole"
+			:is-polygon-dirty="isPolygonDirty"
+			:is-calculating="isCalculating"
+			:hole-count="holeCount"
+			@change="recalculateRoute"
+			@update-fly-point="updateFlyPoint"
+			@update-climb-type="updateClimbType"
+			@change-line-angle="changeLineAngle"
+			@line-angle-slider-start="beginLineAngleSliderInteraction"
+			@line-angle-slider-input="handleLineAngleSliderInput"
+			@line-angle-slider-change="handleLineAngleSliderChange"
+			@start-hole-drawing="startHoleDrawing"
+			@generate-route="generateRoute"
+		/>
 			<div class="wayMap planar-map" v-loading="isCalculating || isImporting" :element-loading-text="mapLoadingText">
 				<CesiumMap @loadMap="loadMainMap"></CesiumMap>
 				<div v-if="isObliqueMode && activeRouteSummary" class="route-switcher">
@@ -69,6 +78,7 @@
 					</div>
 				</div>
 				<div class="delBtn" ref="delBtnRef" @click="delPoy">删除测区</div>
+				<div class="delBtn" ref="delHoleBtnRef" @click="deleteHole">删除挖孔</div>
 				<div id="map-error-tip">
 					<el-icon style="transform: translateY(3px)"><InfoFilled /></el-icon>
 					测区不支持交叉面，无法生成航线
@@ -209,6 +219,12 @@
 }
 .pointer {
 	cursor: pointer;
+}
+.divider {
+	background: #4f4f4f;
+	width: 1px;
+	height: 19px;
+	margin: auto 16px;
 }
 .wayline-import-upload {
 	margin-left: 12px;

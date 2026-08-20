@@ -17,6 +17,7 @@ export interface FiveDirectionRoutePlan {
 
 export interface FiveDirectionRouteOptions {
 	polygon: LocalPoint[];
+	holes?: LocalPoint[][];
 	maximumLineSpacing: number;
 	footprintWidth: number;
 	minimumGroundClearance: number;
@@ -55,8 +56,10 @@ export function calculateFiveDirectionRoutes(options: FiveDirectionRouteOptions)
 	}
 	const pitchRadians = (Math.abs(options.gimbalPitchDegrees) * Math.PI) / 180;
 	const horizontalOffset = options.minimumGroundClearance / Math.tan(pitchRadians);
+	const holes = options.holes ?? [];
 	const nadirPlan = calculatePlanarRoute({
 		polygon: options.polygon,
+		holes,
 		maximumLineSpacing: options.maximumLineSpacing,
 		footprintWidth: options.footprintWidth,
 		takeoffPoint: options.takeoffPoint,
@@ -70,9 +73,13 @@ export function calculateFiveDirectionRoutes(options: FiveDirectionRouteOptions)
 		let plan = nadirPlan;
 		if (headingDegrees !== undefined) {
 			const headingRadians = (headingDegrees * Math.PI) / 180;
-			const shiftedPolygon = shiftPolygon(options.polygon, -horizontalOffset * Math.sin(headingRadians), -horizontalOffset * Math.cos(headingRadians));
+			const eastOffset = -horizontalOffset * Math.sin(headingRadians);
+			const northOffset = -horizontalOffset * Math.cos(headingRadians);
+			const shiftedPolygon = shiftPolygon(options.polygon, eastOffset, northOffset);
+			const shiftedHoles = holes.map((hole) => shiftPolygon(hole, eastOffset, northOffset));
 			plan = calculatePlanarRoute({
 				polygon: shiftedPolygon,
+				holes: shiftedHoles,
 				maximumLineSpacing: options.maximumLineSpacing,
 				footprintWidth: options.footprintWidth,
 				takeoffPoint: options.takeoffPoint,

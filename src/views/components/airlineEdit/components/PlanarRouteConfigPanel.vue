@@ -43,6 +43,36 @@
 						</template>
 					</el-tooltip>
 
+					<div class="base-box edit-box">
+						<div class="edit-box-header">
+							<div>测区编辑</div>
+							<div v-if="holeCount > 0" class="edit-hole-count">已挖孔 {{ holeCount }} 处</div>
+						</div>
+						<div class="edit-tip">
+							按住测区顶点/边线拖动编辑测区形状
+						</div>
+						<div class="edit-box-actions">
+							<el-button
+								class="edit-btn"
+								color="#3c3c3c"
+								:disabled="!hasPolygon || isDrawingHole || isCalculating"
+								:loading="isDrawingHole"
+								@click="startHoleDrawing"
+							>
+								{{ isDrawingHole ? '挖孔中(右键完成/Esc取消)' : '挖孔' }}
+							</el-button>
+							<el-button
+								class="edit-btn"
+								type="primary"
+								:disabled="!hasPolygon || isCalculating || isDrawingHole"
+								:loading="isCalculating"
+								@click="generateRoute"
+							>
+								{{ isPolygonDirty ? '生成航线 *' : '生成航线' }}
+							</el-button>
+						</div>
+					</div>
+
 					<div class="base-box">
 						<div>拍照设置</div>
 						<div class="button-box">
@@ -338,6 +368,41 @@
 .takeoff-tip {
 	color: #fff;
 	margin-left: 5px;
+}
+
+.edit-box {
+	display: flex;
+	flex-direction: column;
+}
+
+.edit-box-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.edit-hole-count {
+	color: #e6a23c;
+	font-size: 12px;
+}
+
+.edit-tip {
+	margin-top: 8px;
+	color: rgba(255, 255, 255, 0.65);
+	font-size: 12px;
+	line-height: 18px;
+}
+
+.edit-box-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 12px;
+
+	.edit-btn {
+		flex: 1;
+		margin: 0;
+		color: #fff;
+	}
 }
 
 .noSetTakeoffPoint {

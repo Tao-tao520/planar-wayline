@@ -48,7 +48,7 @@ export function formatRouteDuration(seconds: number): string {
 /**
  * 根据高度模式计算统一行距使用的最小离地高度。
  */
-export async function resolveFlightHeight(viewer: Cesium.Viewer, frame: LocalCoordinateFrame, polygon: LocalPoint[]): Promise<FlightHeightResult> {
+export async function resolveFlightHeight(viewer: Cesium.Viewer, frame: LocalCoordinateFrame, polygon: LocalPoint[], holes: LocalPoint[][] = []): Promise<FlightHeightResult> {
 	const lineHeight = Number(globeConfig.lineHeight);
 	if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
 		throw new Error('航线高度无效');
@@ -58,7 +58,7 @@ export async function resolveFlightHeight(viewer: Cesium.Viewer, frame: LocalCoo
 		return { minimumGroundClearance: lineHeight };
 	}
 
-	const maximumTerrainHeight = await sampleMaximumTerrainHeight(viewer, frame, polygon);
+	const maximumTerrainHeight = await sampleMaximumTerrainHeight(viewer, frame, polygon, holes);
 	let absoluteFlightHeight = lineHeight;
 	if (Number(globeConfig.heightType) === 2) {
 		if (!globeConfig.flyPosition) {
