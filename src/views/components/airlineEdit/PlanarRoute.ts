@@ -13,7 +13,7 @@ import SaveAirlineDialog from './components/SaveAirlineDialog.vue';
 import PlanarRouteConfigPanel from './components/PlanarRouteConfigPanel.vue';
 import { calculateCameraFieldOfView, M3TD_WIDE_CAMERA } from './config/cameraConfig';
 import globeConfig, { applyFlightSpeedLimit, PLANAR_EDIT_DEFAULTS } from './config/planarConfig';
-import { drawPolygon, movePolygon, PolygonDrawingResult } from './utils/drawPolygon';
+import { beginVertexEdit, cancelMovePolygon, drawHole, drawPolygon, findHoleIndexAtPosition, pickTerrainPosition, PolygonDrawingResult, removeHole } from './utils/drawPolygon';
 import { calculateFiveDirectionRoutes, FiveDirectionRouteKey, FiveDirectionRoutePlan } from './utils/obliqueRoute';
 import { buildPlanarKmz, PlanarKmzRoute } from './utils/planarKmzExport';
 import { addStartPoint, calculateArea, hideStartPointTip, setStartPointCursor } from './utils/planarLine';
@@ -44,7 +44,7 @@ let subscriber: Subscriber | null = null;
 
 
 interface PickedEntityResult {
-	id?: Cesium.Entity & { customData?: number };
+	id?: Cesium.Entity & { customData?: number; ringIndex?: number };
 }
 
 interface RouteSummary {
@@ -126,14 +126,23 @@ export class Instance extends BaseInstance {
 
 	// 响应属性 | ref、reactive、computed
 	delBtnRef = ref<HTMLElement | null>(null);
+	delHoleBtnRef = ref<HTMLElement | null>(null);
+	hasPolygon = ref(false);
+	isDrawingHole = ref(false);
+	isPolygonDirty = ref(false);
+	holeCount = ref(0);
 
 	private flyPot: Cesium.Cartesian3 | null = null;
 	private routeCalculationVersion = 0;
 	private photoDistance = 0;
 	private plannedRoutes: PlannedRouteData[] = [];
 	private stopPolygonDrawing: (() => void) | null = null;
+	/** 挖孔绘制停止函数 */
+	private stopHoleDrawing: (() => void) | null = null;
 	private polygonRightClickEnableTimer: ReturnType<typeof setTimeout> | null = null;
 	private isPolygonRightClickEnabled = false;
+	/** 右键选中的待删除挖孔序号 */
+	private pendingDeleteHoleIndex: number | null = null;
 	private kmzImporter!: KmzImportHandler;
 	private lineAngleHandler!: LineAngleHandler;
 	private routeRenderer!: RouteRenderer;
@@ -188,6 +197,9 @@ export class Instance extends BaseInstance {
 			this.kmzImporter.cancelImportedTerrainCorrection();
 			this.stopPolygonDrawing?.();
 			this.stopPolygonDrawing = null;
+			this.stopHoleDrawing?.();
+			this.stopHoleDrawing = null;
+			cancelMovePolygon();
 			if (this.polygonRightClickEnableTimer) {
 				clearTimeout(this.polygonRightClickEnableTimer);
 				this.polygonRightClickEnableTimer = null;
@@ -217,7 +229,7 @@ export class Instance extends BaseInstance {
 	};
 
 	/**
-	 * 注册测区删除浮层和顶点拖动交互。
+	 * 注册测区删除浮层、挖孔删除浮层和顶点拖动交互。
 	 */
 	private setupPolygonSubscriber(): void {
 		subscriber?.destroy();
@@ -234,31 +246,64 @@ export class Instance extends BaseInstance {
 				return;
 			}
 			const pick = movement.position;
-			const pickedObject = window.mainViewer.scene.pick(pick) as PickedEntityResult | undefined;
-			if (!pick || pickedObject?.id?.name !== 'polygon') {
+			if (!pick) {
 				this.hideDeleteButton();
 				return;
 			}
-			this.showDeleteButtonAtCanvasPosition(pick);
+			const pickedObject = window.mainViewer.scene.pick(pick) as PickedEntityResult | undefined;
+			const pickedEntity = pickedObject?.id;
+
+			// 右键挖孔轮廓线或挖孔顶点：删除挖孔
+			const ringIndex = pickedEntity?.ringIndex !== undefined ? pickedEntity.ringIndex : -1;
+			const isHoleEntity = !!pickedEntity && (pickedEntity.name === 'polygonLine' || pickedEntity.name === 'polygonPoint') && ringIndex >= 0;
+			if (this.entityObjPolygonObj && isHoleEntity) {
+				this.pendingDeleteHoleIndex = ringIndex;
+				this.showDeleteButtonAtCanvasPosition(this.delHoleBtnRef.value, pick);
+				window.mainViewer.scene.requestRender();
+				return;
+			}
+
+			// 孔内部区域被测区挖空、无实体可拾取（或被航线实体遮挡），按几何命中判断
+			if (this.entityObjPolygonObj) {
+				const terrainPosition = pickTerrainPosition(window.mainViewer, pick);
+				const holeIndex = terrainPosition ? findHoleIndexAtPosition(terrainPosition, this.entityObjPolygonObj.holes) : -1;
+				if (holeIndex >= 0) {
+					this.pendingDeleteHoleIndex = holeIndex;
+					this.showDeleteButtonAtCanvasPosition(this.delHoleBtnRef.value, pick);
+					window.mainViewer.scene.requestRender();
+					return;
+				}
+			}
+
+			if (pickedEntity?.name === 'polygon') {
+				// 右键测区：弹出删除测区浮层
+				this.pendingDeleteHoleIndex = null;
+				this.showDeleteButtonAtCanvasPosition(this.delBtnRef.value, pick);
+			} else {
+				this.pendingDeleteHoleIndex = null;
+				this.hideDeleteButton();
+			}
 			window.mainViewer.scene.requestRender();
 		}, 'RIGHT_CLICK');
 		subscriber.addExternal((movement) => {
-			if (!this.entityObjPolygonObj) {
+			if (!this.entityObjPolygonObj || this.isDrawingHole.value) {
 				return;
 			}
 			const pickedObject = window.mainViewer.scene.pick(movement.position) as PickedEntityResult | undefined;
-			if (pickedObject?.id?.name !== 'polygonPoint' || pickedObject.id.customData === undefined) {
+			const pickedEntity = pickedObject?.id;
+			if (!pickedEntity || (pickedEntity.name !== 'polygonPoint' && pickedEntity.name !== 'polygonLine')) {
 				this.hideDeleteButton();
 				return;
 			}
 
-			this.entityObjPolygonObj.pointTndex = pickedObject.id.customData;
-			movePolygon(this.entityObjPolygonObj, window.mainViewer, (value) => {
+			// 按住顶点拖动 / 按住边线加点拖动，左键放开完成
+			beginVertexEdit(this.entityObjPolygonObj, window.mainViewer, pickedEntity, movement.position, (value) => {
 				this.entityObjPolygonObj = value as PolygonDrawingResult;
 				this.updatePolygonArea();
-				void this.recalculateRoute();
+				// 编辑仅改变面状图形，航线由“生成航线”按钮手动重建
+				this.isPolygonDirty.value = true;
 			});
-		}, 'LEFT_CLICK');
+		}, 'LEFT_DOWN');
 	}
 
 	/**
@@ -277,8 +322,15 @@ export class Instance extends BaseInstance {
 			clearTimeout(this.polygonRightClickEnableTimer);
 			this.polygonRightClickEnableTimer = null;
 		}
+		this.stopHoleDrawing?.();
+		this.stopHoleDrawing = null;
+		this.isDrawingHole.value = false;
+		this.hasPolygon.value = false;
+		this.holeCount.value = 0;
+		this.isPolygonDirty.value = false;
 		this.stopPolygonDrawing?.();
 		this.stopPolygonDrawing = null;
+		cancelMovePolygon();
 		this.setupPolygonSubscriber();
 
 		this.stopPolygonDrawing = drawPolygon(
@@ -286,6 +338,8 @@ export class Instance extends BaseInstance {
 			(value) => {
 				this.stopPolygonDrawing = null;
 				this.entityObjPolygonObj = value as PolygonDrawingResult;
+				this.hasPolygon.value = true;
+				this.holeCount.value = 0;
 				this.polygonRightClickEnableTimer = setTimeout(() => {
 					this.isPolygonRightClickEnabled = true;
 					this.polygonRightClickEnableTimer = null;
@@ -312,6 +366,88 @@ export class Instance extends BaseInstance {
 	};
 
 	/**
+	 * 在当前测区内部绘制挖孔环（湖泊、禁飞区等），完成后仅更新面状图形。
+	 */
+	startHoleDrawing = () => {
+		if (!this.entityObjPolygonObj || this.isDrawingHole.value || this.stopPolygonDrawing) {
+			return;
+		}
+		// 中止进行中的顶点拖动，避免其 MOUSE_MOVE / 释放监听与挖孔交互冲突
+		cancelMovePolygon();
+		// 暂停顶点拖动订阅，避免与挖孔左键加点冲突
+		subscriber?.destroy();
+		subscriber = null;
+		this.hideDeleteButton();
+		this.isPolygonRightClickEnabled = false;
+		if (this.polygonRightClickEnableTimer) {
+			clearTimeout(this.polygonRightClickEnableTimer);
+			this.polygonRightClickEnableTimer = null;
+		}
+		this.isDrawingHole.value = true;
+
+		/** 挖孔结束后恢复地图交互（顶点拖动 + 右键删除）。 */
+		const restoreMapInteraction = (): void => {
+			this.setupPolygonSubscriber();
+			this.polygonRightClickEnableTimer = setTimeout(() => {
+				this.isPolygonRightClickEnabled = true;
+				this.polygonRightClickEnableTimer = null;
+			}, 0);
+		};
+
+		this.stopHoleDrawing = drawHole(
+			this.entityObjPolygonObj,
+			window.mainViewer,
+			(value) => {
+				this.stopHoleDrawing = null;
+				this.isDrawingHole.value = false;
+				this.entityObjPolygonObj = value;
+				this.hasPolygon.value = true;
+				this.holeCount.value = this.entityObjPolygonObj.holes?.length ?? 0;
+				this.updatePolygonArea();
+				this.isPolygonDirty.value = true;
+				restoreMapInteraction();
+				ElMessage.success('挖孔完成，请点击“生成航线”重建航线');
+			},
+			() => {
+				this.stopHoleDrawing = null;
+				this.isDrawingHole.value = false;
+				restoreMapInteraction();
+			},
+		);
+	};
+
+	/**
+	 * 删除右键选中的挖孔环，仅更新面状图形，航线由“生成航线”按钮重建。
+	 */
+	deleteHole = () => {
+		const holeIndex = this.pendingDeleteHoleIndex;
+		this.hideDeleteButton();
+		if (!this.entityObjPolygonObj || holeIndex === null || this.isDrawingHole.value || this.stopPolygonDrawing) {
+			return;
+		}
+		cancelMovePolygon();
+		if (!removeHole(this.entityObjPolygonObj, holeIndex)) {
+			this.pendingDeleteHoleIndex = null;
+			return;
+		}
+		this.pendingDeleteHoleIndex = null;
+		this.holeCount.value = this.entityObjPolygonObj.holes?.length ?? 0;
+		this.updatePolygonArea();
+		this.isPolygonDirty.value = true;
+		ElMessage.success('挖孔已删除，请点击“生成航线”重建航线');
+	};
+
+	/**
+	 * 根据当前测区（含挖孔）手动重建航线。
+	 */
+	generateRoute = () => {
+		if (!this.entityObjPolygonObj || this.isCalculating.value || this.isDrawingHole.value) {
+			return;
+		}
+		void this.recalculateRoute();
+	};
+
+	/**
 	 * 清空当前测区与航线状态，导入时可同时清理旧起飞点。
 	 */
 	private clearCurrentRouteState(preserveTakeoff: boolean): void {
@@ -325,6 +461,14 @@ export class Instance extends BaseInstance {
 		}
 		this.stopPolygonDrawing?.();
 		this.stopPolygonDrawing = null;
+		this.stopHoleDrawing?.();
+		this.stopHoleDrawing = null;
+		cancelMovePolygon();
+		this.pendingDeleteHoleIndex = null;
+		this.isDrawingHole.value = false;
+		this.isPolygonDirty.value = false;
+		this.hasPolygon.value = false;
+		this.holeCount.value = 0;
 		this.lineAngleHandler.teardownSliderInteraction();
 		this.lineAngleHandler.hideIndicator();
 		this.drawDataSource?.entities.removeAll();
@@ -373,6 +517,7 @@ export class Instance extends BaseInstance {
 			// 已完成测区时暂停顶点点击订阅，同样避免抢 LEFT_CLICK
 			subscriber?.destroy();
 			subscriber = null;
+			cancelMovePolygon();
 
 			addStartPoint(window.mainViewer, (position?: Cesium.Cartesian3) => {
 				this.flyPointStatus.value = false;
@@ -455,6 +600,13 @@ export class Instance extends BaseInstance {
 	handleLineAngleSliderInput = (value: number | number[]) => this.lineAngleHandler.handleSliderInput(value);
 	/** 委托到 lineAngleHandler */
 	handleLineAngleSliderChange = (value: number | number[]) => this.lineAngleHandler.handleSliderChange(value);
+
+	/**
+	 * 路由回退。
+	 */
+	handleBack = () => {
+		this.router?.back();
+	};
 
 	/**
 	 * 选择 KMZ 文件后启动面状航线导入。
@@ -573,6 +725,20 @@ export class Instance extends BaseInstance {
 			for (let index = 0; index < polygonPositions.length; index++) {
 				localPolygon.push(frame.toLocal(polygonPositions[index]));
 			}
+			// 挖孔环（禁飞区）一并传入，扫描线绕孔、过渡路径绕孔
+			const localHoles: LocalPoint[][] = [];
+			const holeList = this.entityObjPolygonObj.holes ?? [];
+			for (let holeIndex = 0; holeIndex < holeList.length; holeIndex++) {
+				const ring = holeList[holeIndex];
+				if (!ring || ring.length < 3) {
+					continue;
+				}
+				const localRing: LocalPoint[] = [];
+				for (let vertexIndex = 0; vertexIndex < ring.length; vertexIndex++) {
+					localRing.push(frame.toLocal(ring[vertexIndex]));
+				}
+				localHoles.push(localRing);
+			}
 
 			const heightResult = await resolveFlightHeight(window.mainViewer, frame, localPolygon);
 			if (version !== this.routeCalculationVersion) {
@@ -600,6 +766,7 @@ export class Instance extends BaseInstance {
 			const manualAngle = this.lineAngleHandler.isLineAngleManual ? Number(globeConfig.lineAngle) : undefined;
 			const result = calculateFiveDirectionRoutes({
 				polygon: localPolygon,
+				holes: localHoles,
 				maximumLineSpacing,
 				footprintWidth,
 				minimumGroundClearance,
@@ -616,6 +783,7 @@ export class Instance extends BaseInstance {
 			const manualAngle = this.lineAngleHandler.isLineAngleManual ? Number(globeConfig.lineAngle) : undefined;
 			const plan = calculatePlanarRoute({
 				polygon: localPolygon,
+				holes: localHoles,
 				maximumLineSpacing,
 				footprintWidth,
 				takeoffPoint,
@@ -750,6 +918,10 @@ export class Instance extends BaseInstance {
 		}
 		this.plannedRoutes = plannedRoutes;
 		this.photoDistance = photoDistance;
+		// 航线已与当前测区（含挖孔）同步
+		this.hasPolygon.value = true;
+		this.holeCount.value = this.entityObjPolygonObj?.holes?.length ?? 0;
+		this.isPolygonDirty.value = false;
 		this.routeSummaries.value = [];
 		for (let routeIndex = 0; routeIndex < plannedRoutes.length; routeIndex++) {
 			const route = plannedRoutes[routeIndex];
@@ -794,14 +966,14 @@ export class Instance extends BaseInstance {
 		}
 		const positions = this.entityObjPolygonObj.polygonPositions;
 		globeConfig.polygonPositions = positions;
-		globeConfig.area = Number(calculateArea(positions).toFixed(2));
+		// 挖孔（禁飞区）面积不计入测区面积
+		globeConfig.area = Number(calculateArea(positions, this.entityObjPolygonObj.holes).toFixed(2));
 	}
 
 	/**
 	 * 将 Cesium 画布坐标换算为删除按钮相对定位容器（.wayMap）本地坐标后显示。
 	 */
-	private showDeleteButtonAtCanvasPosition(canvasPosition: { x: number; y: number }): void {
-		const btn = this.delBtnRef.value;
+	private showDeleteButtonAtCanvasPosition(btn: HTMLElement | null, canvasPosition: { x: number; y: number }): void {
 		const viewer = window.mainViewer;
 		if (!btn || !viewer) {
 			return;
@@ -828,11 +1000,14 @@ export class Instance extends BaseInstance {
 	}
 
 	/**
-	 * 隐藏测区删除浮层。
+	 * 隐藏测区与挖孔删除浮层。
 	 */
 	private hideDeleteButton(): void {
 		if (this.delBtnRef.value) {
 			this.delBtnRef.value.style.display = 'none';
+		}
+		if (this.delHoleBtnRef.value) {
+			this.delHoleBtnRef.value.style.display = 'none';
 		}
 	}
 

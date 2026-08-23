@@ -7,7 +7,17 @@ import globeConfig, { PLANAR_EDIT_DEFAULTS, PLANAR_SPEED_HARD_MAX } from '../con
 import BaseInstance from '@/utils/BaseInstance';
 
 // 一、Emits 类型定义
-type EmitsType = ('change' | 'updateFlyPoint' | 'updateClimbType' | 'changeLineAngle' | 'lineAngleSliderStart' | 'lineAngleSliderInput' | 'lineAngleSliderChange')[];
+type EmitsType = (
+	| 'change'
+	| 'updateFlyPoint'
+	| 'updateClimbType'
+	| 'changeLineAngle'
+	| 'lineAngleSliderStart'
+	| 'lineAngleSliderInput'
+	| 'lineAngleSliderChange'
+	| 'startHoleDrawing'
+	| 'generateRoute'
+)[];
 
 // 二、Props 定义
 const propDefine = {
@@ -23,13 +33,43 @@ const propDefine = {
 		type: Array as PropType<{ label: string; value: string }[]>,
 		default: () => [],
 	},
+	hasPolygon: {
+		type: Boolean,
+		default: false,
+	},
+	isDrawingHole: {
+		type: Boolean,
+		default: false,
+	},
+	isPolygonDirty: {
+		type: Boolean,
+		default: false,
+	},
+	isCalculating: {
+		type: Boolean,
+		default: false,
+	},
+	holeCount: {
+		type: Number,
+		default: 0,
+	},
 };
 
 // 三、组件信息定义
 export default defineComponent({
 	name: 'PlanarRouteConfigPanel',
 	components: {},
-	emits: ['change', 'updateFlyPoint', 'updateClimbType', 'changeLineAngle', 'lineAngleSliderStart', 'lineAngleSliderInput', 'lineAngleSliderChange'],
+	emits: [
+		'change',
+		'updateFlyPoint',
+		'updateClimbType',
+		'changeLineAngle',
+		'lineAngleSliderStart',
+		'lineAngleSliderInput',
+		'lineAngleSliderChange',
+		'startHoleDrawing',
+		'generateRoute',
+	],
 	props: propDefine,
 	setup(props, ctx) {
 		return new Instance(props, ctx);
@@ -102,6 +142,36 @@ export class Instance extends BaseInstance {
 	get photoTriggerOptions() {
 		return this.props.photoTriggerOptions as { label: string; value: string }[];
 	}
+
+	get hasPolygon() {
+		return this.props.hasPolygon;
+	}
+
+	get isDrawingHole() {
+		return this.props.isDrawingHole;
+	}
+
+	get isPolygonDirty() {
+		return this.props.isPolygonDirty;
+	}
+
+	get isCalculating() {
+		return this.props.isCalculating;
+	}
+
+	get holeCount() {
+		return this.props.holeCount;
+	}
+
+	/** 通知父组件开始挖孔 */
+	startHoleDrawing = () => {
+		this.ctx.emit('startHoleDrawing');
+	};
+
+	/** 通知父组件根据当前测区重新生成航线 */
+	generateRoute = () => {
+		this.ctx.emit('generateRoute');
+	};
 
 	/** 通知父组件切换起飞点 */
 	updateFlyPoint = () => {

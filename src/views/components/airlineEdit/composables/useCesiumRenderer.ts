@@ -37,7 +37,8 @@ export class RouteRenderer {
 	}
 
 	/**
-	 * 使用统一样式绘制拍摄航段和测区内转场航段。
+	 * 将全部航段合并为一条连续折线绘制，保证航线始终为一条线
+	 * （含绕开禁飞区挖孔的过渡段），避免逐段渲染在接头处出现断点。
 	 * @param segments 笛卡尔坐标航段列表
 	 */
 	drawFlightPath(segments: CartesianRouteSegment[]): void {
@@ -48,22 +49,31 @@ export class RouteRenderer {
 
 		this.clearRoutePreview();
 		let firstScanPoint: Cesium.Cartesian3 | null = null;
-		dataSource.entities.suspendEvents();
+		const mergedPositions: Cesium.Cartesian3[] = [];
 		for (let index = 0; index < segments.length; index++) {
 			const segment = segments[index];
-			if (segment.positions.length < 2) {
-				continue;
-			}
-			if (!firstScanPoint && segment.type === 'scan') {
+			if (!firstScanPoint && segment.type === 'scan' && segment.positions.length > 0) {
 				firstScanPoint = segment.positions[0];
 			}
-			const id = `planar_route_${segment.type}_${index}`;
+			for (let pointIndex = 0; pointIndex < segment.positions.length; pointIndex++) {
+				const position = segment.positions[pointIndex];
+				const previous = mergedPositions[mergedPositions.length - 1];
+				if (previous && Cesium.Cartesian3.distanceSquared(previous, position) <= Cesium.Math.EPSILON7) {
+					continue;
+				}
+				mergedPositions.push(position);
+			}
+		}
+
+		dataSource.entities.suspendEvents();
+		if (mergedPositions.length >= 2) {
+			const id = 'planar_route_line';
 			this.routeEntityIds.push(id);
 			dataSource.entities.add({
 				id,
-				name: segment.type === 'scan' ? '拍摄航段' : '转场航段',
+				name: '航线',
 				polyline: {
-					positions: segment.positions,
+					positions: mergedPositions,
 					width: 2,
 					material: Cesium.Color.PALEGREEN,
 					arcType: Cesium.ArcType.GEODESIC,

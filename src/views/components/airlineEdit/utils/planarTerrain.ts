@@ -3,7 +3,7 @@
  * 日    期：2026/07/17
  */
 import * as Cesium from 'cesium';
-import { isPointInsidePolygon, LocalPoint, PlanarRouteSegmentType } from './wayLineCalc';
+import { isPointInsidePolygonWithHoles, LocalPoint, PlanarRouteSegmentType } from './wayLineCalc';
 
 const TERRAIN_SAMPLE_STEP = 30;
 const TERRAIN_BATCH_SIZE = 1000;
@@ -74,8 +74,8 @@ export function createLocalCoordinateFrame(positions: Cesium.Cartesian3[]): Loca
 /**
  * 以固定网格采样整个测区并返回最高地形高度。
  */
-export async function sampleMaximumTerrainHeight(viewer: Cesium.Viewer, frame: LocalCoordinateFrame, polygon: LocalPoint[]): Promise<number> {
-	const samplePoints = createAreaSamplePoints(polygon, TERRAIN_SAMPLE_STEP);
+export async function sampleMaximumTerrainHeight(viewer: Cesium.Viewer, frame: LocalCoordinateFrame, polygon: LocalPoint[], holes: LocalPoint[][] = []): Promise<number> {
+	const samplePoints = createAreaSamplePoints(polygon, TERRAIN_SAMPLE_STEP, holes);
 	const cartographics: Cesium.Cartographic[] = [];
 	for (let index = 0; index < samplePoints.length; index++) {
 		cartographics.push(frame.toCartographic(samplePoints[index]));
@@ -226,7 +226,7 @@ export async function sampleTerrainHeightsAtPositions(viewer: Cesium.Viewer, pos
 /**
  * 创建测区内部地形采样网格，并始终包含全部边界顶点。
  */
-function createAreaSamplePoints(polygon: LocalPoint[], step: number): LocalPoint[] {
+function createAreaSamplePoints(polygon: LocalPoint[], step: number, holes: LocalPoint[][] = []): LocalPoint[] {
 	let minimumX = Number.POSITIVE_INFINITY;
 	let maximumX = Number.NEGATIVE_INFINITY;
 	let minimumY = Number.POSITIVE_INFINITY;
@@ -257,7 +257,7 @@ function createAreaSamplePoints(polygon: LocalPoint[], step: number): LocalPoint
 	for (let x = minimumX + step / 2; x < maximumX; x += step) {
 		for (let y = minimumY + step / 2; y < maximumY; y += step) {
 			const point = { x, y };
-			if (isPointInsidePolygon(point, polygon)) {
+			if (isPointInsidePolygonWithHoles(point, polygon, holes)) {
 				result.push(point);
 			}
 		}

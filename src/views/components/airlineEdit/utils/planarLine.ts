@@ -205,19 +205,31 @@ export function getStartPointHeight(point): Array<Cesium.Cartesian3> {
 
 /**
  * 计算面积
- * @param {Cesium.Cartesian3} positions
+ * @param {Cesium.Cartesian3} positions 外环顶点
+ * @param {Array<Array<Cesium.Cartesian3>>} holes 挖孔环顶点集合
  * @returns {number} 单位：平方米
  */
-export function calculateArea(positions: Array<Cesium.Cartesian3>) {
-	let outPoint: any = positions.map((e) => {
-		const ellipsoid = window.mainViewer.scene.globe.ellipsoid;
-		const cartographic = ellipsoid.cartesianToCartographic(e);
-		return [Cesium.Math.toDegrees(cartographic.longitude), Cesium.Math.toDegrees(cartographic.latitude)];
-	});
+export function calculateArea(positions: Array<Cesium.Cartesian3>, holes?: Array<Array<Cesium.Cartesian3>>) {
+	const ellipsoid = window.mainViewer.scene.globe.ellipsoid;
+	const toRing = (ringPositions: Array<Cesium.Cartesian3>): any => {
+		const ring: any = ringPositions.map((e) => {
+			const cartographic = ellipsoid.cartesianToCartographic(e);
+			return [Cesium.Math.toDegrees(cartographic.longitude), Cesium.Math.toDegrees(cartographic.latitude)];
+		});
+		ring.push(ring[0]);
+		return ring;
+	};
 
-	outPoint.push(outPoint[0]);
+	const rings: any[] = [toRing(positions)];
+	if (holes) {
+		for (let index = 0; index < holes.length; index++) {
+			if (holes[index] && holes[index].length >= 3) {
+				rings.push(toRing(holes[index]));
+			}
+		}
+	}
 
-	let polygon = turf.polygon([outPoint]);
+	let polygon = turf.polygon(rings);
 
 	return turf.area(polygon);
 }

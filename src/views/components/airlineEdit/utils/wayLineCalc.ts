@@ -33,6 +33,7 @@ export interface PlanarRoutePlan {
 
 export interface PlanarRouteOptions {
 	polygon: LocalPoint[];
+	holes?: LocalPoint[][];
 	maximumLineSpacing: number;
 	footprintWidth: number;
 	takeoffPoint?: LocalPoint;
@@ -101,12 +102,13 @@ export function calculatePhotoDistance(minimumGroundClearance: number, verticalF
 export function calculatePlanarRoute(options: PlanarRouteOptions): PlanarRoutePlan {
 	validateOptions(options);
 
+	const holes = options.holes ?? [];
 	const angles = options.manualAngle === undefined ? collectCandidateAngles(options.polygon) : [normalizeAxisAngle(options.manualAngle)];
 	let bestPlan: PlanarRoutePlan | null = null;
 
 	for (let index = 0; index < angles.length; index++) {
 		const angle = angles[index];
-		const plan = calculatePlanForAngle(options, angle);
+		const plan = calculatePlanForAngle(options, holes, angle);
 		if (!plan) {
 			continue;
 		}
@@ -120,6 +122,123 @@ export function calculatePlanarRoute(options: PlanarRouteOptions): PlanarRoutePl
 	}
 
 	return bestPlan;
+}
+
+/**
+ * 判断点是否位于带洞多边形内部（外环内且不在任何洞内，各环边界视为有效面）。
+ */
+export function isPointInsidePolygonWithHoles(point: LocalPoint, polygon: LocalPoint[], holes: LocalPoint[][]): boolean {
+	if (!isPointInsidePolygon(point, polygon)) {
+		return false;
+	}
+	for (let holeIndex = 0; holeIndex < holes.length; holeIndex++) {
+		if (isPointStrictlyInsideRing(point, holes[holeIndex])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * 判断点是否严格位于环内部（不含边界）。
+ */
+export function isPointStrictlyInsideRing(point: LocalPoint, ring: LocalPoint[]): boolean {
+	if (isPointOnRingBoundary(point, ring)) {
+		return false;
+	}
+	return isPointInsidePolygon(point, ring);
+}
+
+/**
+ * 判断点是否位于环的某条边上。
+ */
+export function isPointOnRingBoundary(point: LocalPoint, ring: LocalPoint[]): boolean {
+	for (let index = 0; index < ring.length; index++) {
+		const nextIndex = (index + 1) % ring.length;
+		if (isPointOnSegment(point, ring[index], ring[nextIndex])) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * 校验挖孔环集合：环必须完全位于测区内部且互不重叠。
+ */
+export function validateHoles(polygon: LocalPoint[], holes: LocalPoint[][]): void {
+	for (let holeIndex = 0; holeIndex < holes.length; holeIndex++) {
+		const hole = holes[holeIndex];
+		if (hole.length < 3) {
+			throw new Error(`第 ${holeIndex + 1} 个挖孔至少需要 3 个顶点`);
+		}
+		if (Math.abs(calculateSignedArea(hole)) <= EPSILON) {
+			throw new Error(`第 ${holeIndex + 1} 个挖孔面积无效`);
+		}
+		for (let vertexIndex = 0; vertexIndex < hole.length; vertexIndex++) {
+			if (!isPointStrictlyInsideRing(hole[vertexIndex], polygon)) {
+				throw new Error(`第 ${holeIndex + 1} 个挖孔超出测区范围，请调整后重新生成航线`);
+			}
+			for (let otherIndex = 0; otherIndex < holes.length; otherIndex++) {
+				if (otherIndex !== holeIndex && isPointInsidePolygon(hole[vertexIndex], holes[otherIndex])) {
+					throw new Error('挖孔之间存在重叠，请调整后重新生成航线');
+				}
+			}
+		}
+		if (doRingsIntersect(hole, polygon)) {
+			throw new Error(`第 ${holeIndex + 1} 个挖孔与测区边界相交，请调整后重新生成航线`);
+		}
+		for (let otherIndex = 0; otherIndex < holeIndex; otherIndex++) {
+			if (doRingsIntersect(hole, holes[otherIndex])) {
+				throw new Error('挖孔之间存在重叠，请调整后重新生成航线');
+			}
+		}
+	}
+}
+
+/**
+ * 判断两个闭合环的边是否存在相交（含端点接触）。
+ */
+export function doRingsIntersect(ringA: LocalPoint[], ringB: LocalPoint[]): boolean {
+	for (let indexA = 0; indexA < ringA.length; indexA++) {
+		const nextA = (indexA + 1) % ringA.length;
+		for (let indexB = 0; indexB < ringB.length; indexB++) {
+			const nextB = (indexB + 1) % ringB.length;
+			if (doSegmentsIntersect(ringA[indexA], ringA[nextA], ringB[indexB], ringB[nextB])) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * 判断两条线段是否相交（含端点接触与共线重叠）。
+ */
+function doSegmentsIntersect(startA: LocalPoint, endA: LocalPoint, startB: LocalPoint, endB: LocalPoint): boolean {
+	const offsetAB = subtract(startB, startA);
+	const directionA = subtract(endA, startA);
+	const directionB = subtract(endB, startB);
+	const crossAB = cross(directionA, directionB);
+
+	if (Math.abs(crossAB) > EPSILON) {
+		const parameterA = cross(offsetAB, directionB) / crossAB;
+		const parameterB = cross(offsetAB, directionA) / crossAB;
+		return parameterA >= -EPSILON && parameterA <= 1 + EPSILON && parameterB >= -EPSILON && parameterB <= 1 + EPSILON;
+	}
+
+	// 平行：先排除不共线情况，再检查投影区间是否重叠
+	if (Math.abs(cross(offsetAB, directionA)) > EPSILON) {
+		return false;
+	}
+	const squaredLength = dot(directionA, directionA);
+	if (squaredLength <= EPSILON) {
+		return true;
+	}
+	const startParameter = dot(offsetAB, directionA) / squaredLength;
+	const endParameter = dot(subtract(endB, startA), directionA) / squaredLength;
+	const lower = Math.min(startParameter, endParameter);
+	const upper = Math.max(startParameter, endParameter);
+	return lower <= 1 + EPSILON && upper >= -EPSILON;
 }
 
 /**
@@ -159,6 +278,7 @@ function validateOptions(options: PlanarRouteOptions): void {
 	if (Math.abs(calculateSignedArea(options.polygon)) <= EPSILON) {
 		throw new Error('测区面积无效');
 	}
+	validateHoles(options.polygon, options.holes ?? []);
 	if (!Number.isFinite(options.maximumLineSpacing) || options.maximumLineSpacing <= 0) {
 		throw new Error('自动行距无效');
 	}
@@ -201,8 +321,8 @@ function collectCandidateAngles(polygon: LocalPoint[]): number[] {
 /**
  * 生成指定方向的扫描行，并比较四种往返起始方式。
  */
-function calculatePlanForAngle(options: PlanarRouteOptions, angle: number): PlanarRoutePlan | null {
-	const rowsResult = createScanRows(options.polygon, angle, options.maximumLineSpacing);
+function calculatePlanForAngle(options: PlanarRouteOptions, holes: LocalPoint[][], angle: number): PlanarRoutePlan | null {
+	const rowsResult = createScanRows(options.polygon, holes, angle, options.maximumLineSpacing);
 	if (rowsResult.rows.length === 0) {
 		return null;
 	}
@@ -214,7 +334,7 @@ function calculatePlanForAngle(options: PlanarRouteOptions, angle: number): Plan
 	for (let rowIndex = 0; rowIndex < rowDirections.length; rowIndex++) {
 		for (let directionIndex = 0; directionIndex < initialDirections.length; directionIndex++) {
 			const orderedIntervals = orderScanIntervals(rowsResult.rows, rowDirections[rowIndex], initialDirections[directionIndex]);
-			const plan = assembleRoute(options, orderedIntervals, angle, rowsResult.lineSpacing);
+			const plan = assembleRoute(options, holes, orderedIntervals, angle, rowsResult.lineSpacing);
 			if (!bestPlan || plan.score < bestPlan.score) {
 				bestPlan = plan;
 			}
@@ -227,11 +347,18 @@ function calculatePlanForAngle(options: PlanarRouteOptions, angle: number): Plan
 /**
  * 在旋转坐标系中生成覆盖测区的平行扫描行。
  */
-function createScanRows(polygon: LocalPoint[], angle: number, maximumLineSpacing: number): { rows: ScanRow[]; lineSpacing: number } {
+function createScanRows(polygon: LocalPoint[], holes: LocalPoint[][], angle: number, maximumLineSpacing: number): { rows: ScanRow[]; lineSpacing: number } {
 	const rotatedPolygon: RotatedPoint[] = [];
 	for (let index = 0; index < polygon.length; index++) {
 		rotatedPolygon.push(rotatePoint(polygon[index], angle));
 	}
+	const rotatedHoles: RotatedPoint[][] = holes.map((hole) => {
+		const rotatedHole: RotatedPoint[] = [];
+		for (let index = 0; index < hole.length; index++) {
+			rotatedHole.push(rotatePoint(hole[index], angle));
+		}
+		return rotatedHole;
+	});
 
 	let minimumCross = Number.POSITIVE_INFINITY;
 	let maximumCross = Number.NEGATIVE_INFINITY;
@@ -242,10 +369,11 @@ function createScanRows(polygon: LocalPoint[], angle: number, maximumLineSpacing
 
 	const positionsResult = calculateScanLinePositions(minimumCross, maximumCross, maximumLineSpacing);
 	const rows: ScanRow[] = [];
+	const rotatedRings = [rotatedPolygon, ...rotatedHoles];
 
 	for (let index = 0; index < positionsResult.positions.length; index++) {
 		const cross = positionsResult.positions[index];
-		const intervals = clipScanLine(rotatedPolygon, angle, cross);
+		const intervals = clipScanLine(rotatedRings, angle, cross);
 		if (intervals.length > 0) {
 			rows.push({ cross, intervals });
 		}
@@ -364,21 +492,24 @@ function calculateScanLinePositions(minimumCross: number, maximumCross: number, 
 /**
  * 将一条无限扫描线裁剪为简单多边形内部的若干区间。
  */
-function clipScanLine(rotatedPolygon: RotatedPoint[], angle: number, cross: number): ScanInterval[] {
+function clipScanLine(rotatedRings: RotatedPoint[][], angle: number, cross: number): ScanInterval[] {
 	const intersections: number[] = [];
 
-	for (let index = 0; index < rotatedPolygon.length; index++) {
-		const nextIndex = (index + 1) % rotatedPolygon.length;
-		const start = rotatedPolygon[index];
-		const end = rotatedPolygon[nextIndex];
-		const crosses = (start.cross <= cross && end.cross > cross) || (end.cross <= cross && start.cross > cross);
-		if (!crosses) {
-			continue;
-		}
+	for (let ringIndex = 0; ringIndex < rotatedRings.length; ringIndex++) {
+		const rotatedPolygon = rotatedRings[ringIndex];
+		for (let index = 0; index < rotatedPolygon.length; index++) {
+			const nextIndex = (index + 1) % rotatedPolygon.length;
+			const start = rotatedPolygon[index];
+			const end = rotatedPolygon[nextIndex];
+			const crosses = (start.cross <= cross && end.cross > cross) || (end.cross <= cross && start.cross > cross);
+			if (!crosses) {
+				continue;
+			}
 
-		const ratio = (cross - start.cross) / (end.cross - start.cross);
-		const along = start.along + (end.along - start.along) * ratio;
-		intersections.push(along);
+			const ratio = (cross - start.cross) / (end.cross - start.cross);
+			const along = start.along + (end.along - start.along) * ratio;
+			intersections.push(along);
+		}
 	}
 
 	intersections.sort((left, right) => left - right);
@@ -449,7 +580,7 @@ function orderScanIntervals(rows: ScanRow[], reverseRows: boolean, initialRevers
 /**
  * 使用测区内最短路径连接扫描区间，并计算方向评分。
  */
-function assembleRoute(options: PlanarRouteOptions, intervals: ScanInterval[], angle: number, lineSpacing: number): PlanarRoutePlan {
+function assembleRoute(options: PlanarRouteOptions, holes: LocalPoint[][], intervals: ScanInterval[], angle: number, lineSpacing: number): PlanarRoutePlan {
 	const segments: PlanarRouteSegment[] = [];
 	let scanLength = 0;
 	let transitLength = 0;
@@ -459,7 +590,7 @@ function assembleRoute(options: PlanarRouteOptions, intervals: ScanInterval[], a
 	for (let index = 0; index < intervals.length; index++) {
 		const interval = intervals[index];
 		if (previousEnd) {
-			const transitPoints = findShortestPathInsidePolygon(previousEnd, interval.start, options.polygon);
+			const transitPoints = findShortestPathInsidePolygon(previousEnd, interval.start, options.polygon, holes);
 			const length = calculatePolylineLength(transitPoints);
 			if (length > EPSILON) {
 				const captureGroupId = previousCaptureGroupId === interval.captureGroupId ? interval.captureGroupId : undefined;
@@ -499,17 +630,23 @@ function assembleRoute(options: PlanarRouteOptions, intervals: ScanInterval[], a
 /**
  * 在简单多边形可见图上计算两个点之间的最短内部路径。
  */
-function findShortestPathInsidePolygon(start: LocalPoint, end: LocalPoint, polygon: LocalPoint[]): LocalPoint[] {
+function findShortestPathInsidePolygon(start: LocalPoint, end: LocalPoint, polygon: LocalPoint[], holes: LocalPoint[][] = []): LocalPoint[] {
 	if (distance(start, end) <= EPSILON) {
 		return [start];
 	}
-	if (isSegmentInsidePolygon(start, end, polygon)) {
+	if (isSegmentInsidePolygon(start, end, polygon, holes)) {
 		return [start, end];
 	}
 
 	const nodes: LocalPoint[] = [start, end];
 	for (let index = 0; index < polygon.length; index++) {
 		nodes.push(polygon[index]);
+	}
+	for (let holeIndex = 0; holeIndex < holes.length; holeIndex++) {
+		const hole = holes[holeIndex];
+		for (let index = 0; index < hole.length; index++) {
+			nodes.push(hole[index]);
+		}
 	}
 
 	const nodeCount = nodes.length;
@@ -525,7 +662,7 @@ function findShortestPathInsidePolygon(start: LocalPoint, end: LocalPoint, polyg
 	for (let left = 0; left < nodeCount; left++) {
 		graph[left][left] = 0;
 		for (let right = left + 1; right < nodeCount; right++) {
-			if (!isSegmentInsidePolygon(nodes[left], nodes[right], polygon)) {
+			if (!isSegmentInsidePolygon(nodes[left], nodes[right], polygon, holes)) {
 				continue;
 			}
 			const length = distance(nodes[left], nodes[right]);
@@ -605,13 +742,17 @@ function runDijkstra(graph: number[][], source: number): number[] {
 /**
  * 通过边界交点分段检查线段是否始终位于多边形内部或边界上。
  */
-function isSegmentInsidePolygon(start: LocalPoint, end: LocalPoint, polygon: LocalPoint[]): boolean {
+function isSegmentInsidePolygon(start: LocalPoint, end: LocalPoint, polygon: LocalPoint[], holes: LocalPoint[][] = []): boolean {
 	const parameters: number[] = [0, 1];
-	for (let index = 0; index < polygon.length; index++) {
-		const nextIndex = (index + 1) % polygon.length;
-		const edgeParameters = collectIntersectionParameters(start, end, polygon[index], polygon[nextIndex]);
-		for (let parameterIndex = 0; parameterIndex < edgeParameters.length; parameterIndex++) {
-			parameters.push(edgeParameters[parameterIndex]);
+	const rings = [polygon, ...holes];
+	for (let ringIndex = 0; ringIndex < rings.length; ringIndex++) {
+		const ring = rings[ringIndex];
+		for (let index = 0; index < ring.length; index++) {
+			const nextIndex = (index + 1) % ring.length;
+			const edgeParameters = collectIntersectionParameters(start, end, ring[index], ring[nextIndex]);
+			for (let parameterIndex = 0; parameterIndex < edgeParameters.length; parameterIndex++) {
+				parameters.push(edgeParameters[parameterIndex]);
+			}
 		}
 	}
 
@@ -628,7 +769,7 @@ function isSegmentInsidePolygon(start: LocalPoint, end: LocalPoint, polygon: Loc
 	for (let index = 0; index + 1 < uniqueParameters.length; index++) {
 		const middle = (uniqueParameters[index] + uniqueParameters[index + 1]) / 2;
 		const point = interpolate(start, end, middle);
-		if (!isPointInsidePolygon(point, polygon)) {
+		if (!isPointInsidePolygonWithHoles(point, polygon, holes)) {
 			return false;
 		}
 	}
