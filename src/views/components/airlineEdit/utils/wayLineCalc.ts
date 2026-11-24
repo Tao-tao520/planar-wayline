@@ -13,10 +13,16 @@ export interface LocalPoint {
 
 export type PlanarRouteSegmentType = 'scan' | 'transit';
 
+export interface SmartObliquePose {
+	pitch: number;
+	yaw: number;
+}
+
 export interface PlanarRouteSegment {
 	type: PlanarRouteSegmentType;
 	points: LocalPoint[];
 	captureGroupId?: number;
+	smartObliquePoses?: SmartObliquePose[];
 }
 
 export interface PlanarRoutePlan {

@@ -27,6 +27,8 @@ export interface PlanarConfig {
 	/** 由拍照间距算出的建议限速（m/s），手动可调高至 15 */
 	maxSpeed: number;
 	smartObliqueGimbalPitch: number;
+	smartObliqueEnable: boolean;
+	smartObliqueSwingAngle: number;
 	photoTriggerMode: 'time' | 'distance';
 	spacing: number;
 	takeoffSpeed: number;
@@ -51,6 +53,8 @@ export const PLANAR_EDIT_DEFAULTS = {
 	speed: 10,
 	maxSpeed: PLANAR_SPEED_HARD_MAX,
 	smartObliqueGimbalPitch: -45,
+	smartObliqueEnable: false,
+	smartObliqueSwingAngle: 45,
 	photoTriggerMode: 'time' as const,
 	spacing: 50,
 	takeoffSpeed: 15,

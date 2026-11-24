@@ -7,16 +7,23 @@
 		<div class="box">
 			<div class="header">编辑</div>
 			<div class="content">
-				<div class="title">选择飞行器</div>
+				<div class="title">航线类型</div>
 				<div class="list_box">
-					<div class="item" :class="{ active: activeAircraft == item.id }" v-for="(item, index) in aircraftList" @click="changeAircraft(item)">
+					<div class="item" :class="{ active: activeWaylineKind == item.id }" v-for="item in waylineKinds" :key="item.id" @click="changeWaylineKind(item.id)">
+						{{ item.name }}
+					</div>
+				</div>
+
+				<div class="title" style="margin-top: 20px">选择飞行器</div>
+				<div class="list_box">
+					<div class="item" :class="{ active: activeSeriesId == item.id }" v-for="item in aircraftList" :key="item.id" @click="changeAircraft(item.id)">
 						{{ item.name }}
 					</div>
 				</div>
 
 				<div class="title" style="margin-top: 20px">选择型号</div>
 				<div class="list_box">
-					<div class="item" :class="{ active: activeModel == item.id }" v-for="(item, index) in modelList" @click="changeModel(item)">
+					<div class="item" :class="{ active: activeModelId == item.id }" v-for="item in modelList" :key="item.id" @click="changeModel(item.id)">
 						{{ item.name }}
 					</div>
 				</div>
@@ -44,7 +51,7 @@
 	background: rgba(0, 0, 0, 0.3);
 	pointer-events: auto;
 	.box {
-		width: 578px;
+		width: 680px;
 		position: absolute;
 		top: 50%;
 		left: 50%;
@@ -73,15 +80,19 @@
 				grid-template-columns: 1fr 1fr 1fr;
 				.item {
 					width: 100%;
-					height: 52px;
+					min-height: 52px;
 					background: #3c3c3c;
 					color: #fff;
 					text-align: center;
 					border-radius: 2px;
-					line-height: 52px;
+					line-height: 1.3;
+					padding: 8px 6px;
 					box-sizing: border-box;
 					border: 1px solid #3c3c3c;
 					cursor: pointer;
+					display: flex;
+					align-items: center;
+					justify-content: center;
 				}
 				.active {
 					background: rgba(45, 140, 240, 0.4);

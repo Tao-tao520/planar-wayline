@@ -5,7 +5,8 @@
 import * as Cesium from 'cesium';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Ref } from 'vue';
-import { calculateCameraFieldOfView, M3TD_WIDE_CAMERA } from '../config/cameraConfig';
+import { fieldOfViewFromLens } from '../config/cameraConfig';
+import { getSelectedAircraft } from '../config/selectedAircraft';
 import globeConfig, { calculateMaxFlightSpeed, PLANAR_EDIT_DEFAULTS, PLANAR_SPEED_HARD_MAX } from '../config/planarConfig';
 import { drawImportedPolygon, PolygonDrawingResult } from '../utils/drawPolygon';
 import { drawFlyStartLine } from '../utils/planarLine';
@@ -200,7 +201,7 @@ export class KmzImportHandler {
 		const lineAngle = this.clampImportedNumber(imported.lineAngle, PLANAR_EDIT_DEFAULTS.lineAngle, 0, 179, '主航线角度', warnings);
 		const smartObliqueGimbalPitch = this.clampImportedNumber(imported.gimbalPitchDegrees, PLANAR_EDIT_DEFAULTS.smartObliqueGimbalPitch, -85, -40, '云台俯仰角', warnings);
 		const photoTriggerMode = imported.photoTriggerMode ?? PLANAR_EDIT_DEFAULTS.photoTriggerMode;
-		const cameraFieldOfView = calculateCameraFieldOfView(M3TD_WIDE_CAMERA);
+		const cameraFieldOfView = fieldOfViewFromLens(getSelectedAircraft().wideCamera);
 		const fallbackPhotoDistance = calculatePhotoDistance(lineHeight, cameraFieldOfView.verticalDegrees, overlapH);
 		const photoDistance = imported.photoDistance && imported.photoDistance > 0 ? imported.photoDistance : fallbackPhotoDistance;
 		const maxSpeed = Number(calculateMaxFlightSpeed(photoDistance).toFixed(1));
@@ -361,6 +362,13 @@ export class KmzImportHandler {
 		globeConfig.lineAngle = config.lineAngle;
 		globeConfig.photoTriggerMode = config.photoTriggerMode;
 		globeConfig.smartObliqueGimbalPitch = config.smartObliqueGimbalPitch;
+		globeConfig.smartObliqueEnable = imported.smartObliqueEnable === true;
+		if (imported.smartObliqueSwingAngle !== undefined) {
+			globeConfig.smartObliqueSwingAngle = imported.smartObliqueSwingAngle;
+		}
+		if (imported.smartObliqueEnable && !getSelectedAircraft().supportsSmartOblique) {
+			ElMessage.warning('当前机型不支持智能摆拍');
+		}
 
 		const polygonObj = drawImportedPolygon(window.mainViewer, polygonPositions);
 		this.ctx.setEntityObjPolygonObj(polygonObj);
@@ -394,7 +402,7 @@ export class KmzImportHandler {
 				coordinates: this.ctx.flattenRouteCoordinates(previewConnection.segments),
 				totalLength,
 				climbLength: exportConnection.climbLength,
-				photoCount: this.ctx.calculateRoutePhotoCount(prepared.exportSegments, config.photoDistance, imported.templateType === 'mapping3d'),
+				photoCount: this.ctx.calculateRoutePhotoCount(prepared.exportSegments, config.photoDistance, imported.templateType === 'mapping3d' && !imported.smartObliqueEnable),
 			});
 		}
 

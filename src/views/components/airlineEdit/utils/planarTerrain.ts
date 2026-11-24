@@ -3,7 +3,7 @@
  * 日    期：2026/07/17
  */
 import * as Cesium from 'cesium';
-import { isPointInsidePolygon, LocalPoint, PlanarRouteSegmentType } from './wayLineCalc';
+import { isPointInsidePolygon, LocalPoint, PlanarRouteSegmentType, SmartObliquePose } from './wayLineCalc';
 
 const TERRAIN_SAMPLE_STEP = 30;
 const TERRAIN_BATCH_SIZE = 1000;
@@ -19,12 +19,14 @@ export interface CartesianRouteSegment {
 	type: PlanarRouteSegmentType;
 	positions: Cesium.Cartesian3[];
 	captureGroupId?: number;
+	smartObliquePoses?: SmartObliquePose[];
 }
 
 export interface LocalRouteSegment {
 	type: PlanarRouteSegmentType;
 	points: LocalPoint[];
 	captureGroupId?: number;
+	smartObliquePoses?: SmartObliquePose[];
 }
 
 export interface RouteHeightOptions {
@@ -138,7 +140,12 @@ export async function createCartesianRouteSegments(
 	const localSegments: LocalRouteSegment[] = [];
 	for (let index = 0; index < segments.length; index++) {
 		const points = options.heightType === 3 ? densifyPolyline(segments[index].points, TERRAIN_SAMPLE_STEP) : [...segments[index].points];
-		localSegments.push({ type: segments[index].type, points, captureGroupId: segments[index].captureGroupId });
+		localSegments.push({
+			type: segments[index].type,
+			points,
+			captureGroupId: segments[index].captureGroupId,
+			smartObliquePoses: segments[index].smartObliquePoses,
+		});
 	}
 
 	if (options.heightType === 3) {
@@ -156,7 +163,7 @@ export async function createCartesianRouteSegments(
 		for (let pointIndex = 0; pointIndex < segment.points.length; pointIndex++) {
 			positions.push(frame.toCartesian(segment.points[pointIndex], options.absoluteFlightHeight!));
 		}
-		result.push({ type: segment.type, positions, captureGroupId: segment.captureGroupId });
+		result.push({ type: segment.type, positions, captureGroupId: segment.captureGroupId, smartObliquePoses: segment.smartObliquePoses });
 	}
 	return result;
 }
@@ -322,7 +329,12 @@ async function createTerrainFollowingSegments(
 			const height = heights[range.start + pointIndex] + lineHeight;
 			positions.push(frame.toCartesian(localPoint, height));
 		}
-		result.push({ type: segments[segmentIndex].type, positions, captureGroupId: segments[segmentIndex].captureGroupId });
+		result.push({
+			type: segments[segmentIndex].type,
+			positions,
+			captureGroupId: segments[segmentIndex].captureGroupId,
+			smartObliquePoses: segments[segmentIndex].smartObliquePoses,
+		});
 	}
 	return result;
 }

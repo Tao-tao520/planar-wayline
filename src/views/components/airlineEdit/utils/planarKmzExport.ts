@@ -6,6 +6,7 @@ import * as Cesium from 'cesium';
 import JSZip from 'jszip';
 import { MINIMUM_PHOTO_INTERVAL_SECONDS } from '../config/planarConfig';
 import { CartesianRouteSegment } from './planarTerrain';
+import { SmartObliquePose } from './wayLineCalc';
 
 const KML_NAMESPACE = 'http://www.opengis.net/kml/2.2';
 const WPML_NAMESPACE = 'http://www.dji.com/wpmz/1.0.6';
@@ -23,6 +24,7 @@ export interface PlanarKmzRoute {
 
 export interface PlanarKmzExportOptions {
 	isOblique: boolean;
+	smartOblique: boolean;
 	polygonPositions: Cesium.Cartesian3[];
 	takeoffPosition: Cesium.Cartesian3;
 	routes: PlanarKmzRoute[];
@@ -36,12 +38,22 @@ export interface PlanarKmzExportOptions {
 	gimbalPitchDegrees: number;
 	photoTriggerMode: 'time' | 'distance';
 	photoDistance: number;
+	droneEnumValue: number;
+	droneSubEnumValue: number;
+	payloadEnumValue: number;
 }
 
 interface ExportWaypoint {
 	longitude: number;
 	latitude: number;
 	height: number;
+	gimbalPitchDegrees?: number;
+}
+
+interface SmartObliqueRange {
+	startIndex: number;
+	endIndex: number;
+	poses: SmartObliquePose[];
 }
 
 interface CaptureRange {
@@ -56,6 +68,7 @@ interface ExportRouteData {
 	gimbalPitchDegrees: number;
 	waypoints: ExportWaypoint[];
 	captureRanges: CaptureRange[];
+	smartObliqueRanges: SmartObliqueRange[];
 	distance: number;
 }
 
@@ -91,9 +104,10 @@ function validateExportOptions(options: PlanarKmzExportOptions): void {
 	if (options.polygonPositions.length < 3) {
 		throw new Error('请先绘制有效测区');
 	}
-	const expectedRouteCount = options.isOblique ? 5 : 1;
+	const fiveDirection = options.isOblique && !options.smartOblique;
+	const expectedRouteCount = fiveDirection ? 5 : 1;
 	if (options.routes.length !== expectedRouteCount) {
-		throw new Error(options.isOblique ? '倾斜摄影必须包含五组航线' : '正射摄影必须包含一组航线');
+		throw new Error(fiveDirection ? '倾斜摄影必须包含五组航线' : '正射或智能摆拍必须包含一组航线');
 	}
 	if (!Number.isFinite(options.flightSpeed) || options.flightSpeed <= 0) {
 		throw new Error('航线速度无效');
@@ -117,6 +131,7 @@ function validateExportOptions(options: PlanarKmzExportOptions): void {
 function createExportRouteData(route: PlanarKmzRoute, options: PlanarKmzExportOptions): ExportRouteData {
 	const waypoints: ExportWaypoint[] = [];
 	const captureRangeMap = new Map<number, CaptureRange>();
+	const smartObliqueRanges: SmartObliqueRange[] = [];
 	let previousPosition: Cesium.Cartesian3 | null = null;
 	let distance = 0;
 
@@ -130,7 +145,11 @@ function createExportRouteData(route: PlanarKmzRoute, options: PlanarKmzExportOp
 				distance += Cesium.Cartesian3.distance(previousPosition, position);
 			}
 			if (!previousPosition || Cesium.Cartesian3.distanceSquared(previousPosition, position) > Cesium.Math.EPSILON7) {
-				waypoints.push(toRouteExportWaypoint(position, options));
+				const waypoint = toRouteExportWaypoint(position, options);
+				if (segment.smartObliquePoses && segment.smartObliquePoses.length > 0) {
+					waypoint.gimbalPitchDegrees = segment.smartObliquePoses[0].pitch;
+				}
+				waypoints.push(waypoint);
 				previousPosition = position;
 			}
 			const waypointIndex = waypoints.length - 1;
@@ -140,6 +159,9 @@ function createExportRouteData(route: PlanarKmzRoute, options: PlanarKmzExportOp
 			segmentEndIndex = waypointIndex;
 		}
 
+		if (segment.smartObliquePoses && segment.smartObliquePoses.length > 0 && segmentStartIndex >= 0 && segmentEndIndex > segmentStartIndex) {
+			smartObliqueRanges.push({ startIndex: segmentStartIndex, endIndex: segmentEndIndex, poses: segment.smartObliquePoses });
+		}
 		if (segment.captureGroupId !== undefined && segmentStartIndex >= 0 && segmentEndIndex >= segmentStartIndex) {
 			const currentRange = captureRangeMap.get(segment.captureGroupId);
 			if (currentRange) {
@@ -169,6 +191,7 @@ function createExportRouteData(route: PlanarKmzRoute, options: PlanarKmzExportOp
 		gimbalPitchDegrees: route.gimbalPitchDegrees,
 		waypoints,
 		captureRanges,
+		smartObliqueRanges,
 		distance,
 	};
 }
@@ -261,7 +284,7 @@ function buildTemplateKml(options: PlanarKmzExportOptions): string {
 	appendMissionConfig(documentElement, options);
 
 	const folder = appendKmlElement(documentElement, 'Folder');
-	appendWpmlElement(folder, 'templateType', options.isOblique ? 'mapping3d' : 'mapping2d');
+	appendWpmlElement(folder, 'templateType', options.isOblique && !options.smartOblique ? 'mapping3d' : 'mapping2d');
 	appendWpmlElement(folder, 'templateId', 0);
 	const coordinateParam = appendWpmlElement(folder, 'waylineCoordinateSysParam');
 	appendWpmlElement(coordinateParam, 'coordinateMode', 'WGS84');
@@ -277,8 +300,12 @@ function buildTemplateKml(options: PlanarKmzExportOptions): string {
 
 	const placemark = appendKmlElement(folder, 'Placemark');
 	appendWpmlElement(placemark, 'caliFlightEnable', 0);
-	if (options.isOblique) {
+	if (options.isOblique && !options.smartOblique) {
 		appendWpmlElement(placemark, 'inclinedGimbalPitch', options.gimbalPitchDegrees);
+	}
+	if (options.smartOblique) {
+		appendWpmlElement(placemark, 'smartObliqueEnable', 1);
+		appendWpmlElement(placemark, 'smartObliqueGimbalPitch', options.gimbalPitchDegrees);
 	}
 	appendWpmlElement(placemark, 'shootType', options.photoTriggerMode);
 	appendWpmlElement(placemark, 'direction', normalizeDirection(options.lineAngle));
@@ -333,11 +360,11 @@ function appendMissionConfig(parent: Element, options: PlanarKmzExportOptions): 
 	appendWpmlElement(missionConfig, 'globalTransitionalSpeed', options.transitionalSpeed);
 	appendWpmlElement(missionConfig, 'globalRTHHeight', DEFAULT_RTH_HEIGHT);
 	const droneInfo = appendWpmlElement(missionConfig, 'droneInfo');
-	appendWpmlElement(droneInfo, 'droneEnumValue', 91);
-	appendWpmlElement(droneInfo, 'droneSubEnumValue', 1);
+	appendWpmlElement(droneInfo, 'droneEnumValue', options.droneEnumValue);
+	appendWpmlElement(droneInfo, 'droneSubEnumValue', options.droneSubEnumValue);
 	appendWpmlElement(missionConfig, 'waylineAvoidLimitAreaMode', 0);
 	const payloadInfo = appendWpmlElement(missionConfig, 'payloadInfo');
-	appendWpmlElement(payloadInfo, 'payloadEnumValue', 81);
+	appendWpmlElement(payloadInfo, 'payloadEnumValue', options.payloadEnumValue);
 	appendWpmlElement(payloadInfo, 'payloadSubEnumValue', 0);
 	appendWpmlElement(payloadInfo, 'payloadPositionIndex', PAYLOAD_POSITION_INDEX);
 }
@@ -440,11 +467,17 @@ function appendPlacemark(parent: Element, route: ExportRouteData, waypointIndex:
 			appendCaptureGroup(placemark, range, rangeIndex + 1, options);
 		}
 	}
+	for (let rangeIndex = 0; rangeIndex < route.smartObliqueRanges.length; rangeIndex++) {
+		const range = route.smartObliqueRanges[rangeIndex];
+		if (range.startIndex === waypointIndex) {
+			appendSmartObliqueGroup(placemark, range, route.captureRanges.length + 2 + rangeIndex);
+		}
+	}
 	if (waypointIndex === route.waypoints.length - 1) {
 		appendGimbalUnlockGroup(placemark, route.captureRanges.length + 1, waypointIndex);
 	}
 	const gimbalParam = appendWpmlElement(placemark, 'waypointGimbalHeadingParam');
-	appendWpmlElement(gimbalParam, 'waypointGimbalPitchAngle', route.gimbalPitchDegrees);
+	appendWpmlElement(gimbalParam, 'waypointGimbalPitchAngle', waypoint.gimbalPitchDegrees ?? route.gimbalPitchDegrees);
 	appendWpmlElement(gimbalParam, 'waypointGimbalYawAngle', 0);
 	appendWpmlElement(placemark, 'isRisky', 0);
 	appendWpmlElement(placemark, 'waypointWorkType', 0);
@@ -510,6 +543,28 @@ function appendCaptureGroup(parent: Element, range: CaptureRange, actionGroupId:
 	appendWpmlElement(actionParam, 'payloadPositionIndex', PAYLOAD_POSITION_INDEX);
 	appendWpmlElement(actionParam, 'useGlobalPayloadLensIndex', 0);
 	appendWpmlElement(actionParam, 'payloadLensIndex', 'visable');
+}
+
+/**
+ * 写入一段航带上的智能摆拍姿态序列。
+ */
+function appendSmartObliqueGroup(parent: Element, range: SmartObliqueRange, actionGroupId: number): void {
+	const actionGroup = appendActionGroup(parent, actionGroupId, range.startIndex, range.endIndex, 'betweenAdjacentPoints');
+	const action = appendWpmlElement(actionGroup, 'action');
+	appendWpmlElement(action, 'actionId', 0);
+	appendWpmlElement(action, 'actionActuatorFunc', 'startSmartOblique');
+	const actionParam = appendWpmlElement(action, 'actionActuatorFuncParam');
+	appendWpmlElement(actionParam, 'smartObliqueCycleMode', 'unlimited');
+	appendWpmlElement(actionParam, 'payloadPositionIndex', PAYLOAD_POSITION_INDEX);
+	for (let poseIndex = 0; poseIndex < range.poses.length; poseIndex++) {
+		const pose = range.poses[poseIndex];
+		const point = appendWpmlElement(actionParam, 'smartObliquePoint');
+		appendWpmlElement(point, 'smartObliqueRunningTime', 0);
+		appendWpmlElement(point, 'smartObliqueStayTime', 0);
+		appendWpmlElement(point, 'smartObliqueEulerPitch', pose.pitch);
+		appendWpmlElement(point, 'smartObliqueEulerRoll', 0);
+		appendWpmlElement(point, 'smartObliqueEulerYaw', pose.yaw);
+	}
 }
 
 /**

@@ -96,7 +96,48 @@
 						</template>
 					</el-tooltip>
 
-					<div v-if="isObliqueMode" class="base-box gimbal-pitch-box">
+					<div class="base-box gsd-box">
+						<el-tooltip popper-class="infoModel infoModel2" placement="right" :offset="16">
+							<div class="gsd-block">
+								<div class="gsd-label">GSD</div>
+								<div class="gsd-control">
+									<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight <= 2" @click="stepGsd(-1, false)">-1</el-button>
+									<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight <= 2" @click="stepGsd(-0.1, false)">-0.1</el-button>
+									<div class="gsd-value">
+										<el-input v-if="showGsdInput" v-model="gsdInput" class="height-input gsd-input" autofocus @blur="applyGsdInput(false)" />
+										<span v-else class="num gsd-num" @click="beginGsdInput(false)">{{ gsdText }}</span>
+										<span class="gsd-unit">cm/pixel</span>
+									</div>
+									<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight >= 1500" @click="stepGsd(0.1, false)">+0.1</el-button>
+									<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight >= 1500" @click="stepGsd(1, false)">+1</el-button>
+								</div>
+							</div>
+							<template #content>
+								<p>GSD（Ground Sample Distance）指的是地面采样距离。在无人机测绘中，GSD 是指像素大小，即每个像素代表的实际距离。GSD 越小，图像分辨率越高，但数据量也会增加。调整 GSD 将影响航线高度等参数。</p>
+							</template>
+						</el-tooltip>
+						<div v-if="isObliqueMode" class="gsd-block">
+							<div class="gsd-label">倾斜 GSD</div>
+							<div class="gsd-control">
+								<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight <= 2" @click="stepGsd(-1, true)">-1</el-button>
+								<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight <= 2" @click="stepGsd(-0.1, true)">-0.1</el-button>
+								<div class="gsd-value">
+									<el-input v-if="showObliqueGsdInput" v-model="gsdInput" class="height-input gsd-input" autofocus @blur="applyGsdInput(true)" />
+									<span v-else class="num gsd-num" @click="beginGsdInput(true)">{{ obliqueGsdText }}</span>
+									<span class="gsd-unit">cm/pixel</span>
+								</div>
+								<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight >= 1500" @click="stepGsd(0.1, true)">+0.1</el-button>
+								<el-button color="#3c3c3c" class="gsd-step" :disabled="globeConfig.lineHeight >= 1500" @click="stepGsd(1, true)">+1</el-button>
+							</div>
+						</div>
+					</div>
+
+					<div v-if="showSmartObliqueSwitch" class="base-box smart-oblique-row">
+						<div>智能摆动拍摄</div>
+						<el-switch v-model="globeConfig.smartObliqueEnable" style="--el-switch-on-color: #2d8cf0" @change="toggleSmartOblique" />
+					</div>
+
+					<div v-if="isObliqueMode && !smartObliqueEnabled" class="base-box gimbal-pitch-box">
 						<div class="gimbal-pitch-header">
 							<div>云台俯仰角</div>
 							<div class="gimbal-pitch-value">
@@ -118,6 +159,23 @@
 								/>
 							</div>
 							<el-button :disabled="globeConfig.smartObliqueGimbalPitch >= -40" color="#3c3c3c" icon="Plus" class="gimbal-pitch-btn" @click="changeGimbalPitch(1)"></el-button>
+						</div>
+					</div>
+
+					<div v-if="smartObliqueEnabled" class="base-box gimbal-pitch-box">
+						<div class="gimbal-pitch-header">
+							<div>云台摆动角度</div>
+							<div class="gimbal-pitch-value">
+								<span class="gimbal-pitch-num">{{ globeConfig.smartObliqueSwingAngle }}</span>
+								<span>°</span>
+							</div>
+						</div>
+						<div class="gimbal-pitch-control">
+							<el-button :disabled="globeConfig.smartObliqueSwingAngle <= 10" color="#3c3c3c" icon="Minus" class="gimbal-pitch-btn" @click="changeSwingAngle(-1)"></el-button>
+							<div class="gimbal-pitch-slider">
+								<el-slider v-model="globeConfig.smartObliqueSwingAngle" :min="10" :max="45" :step="1" :show-tooltip="false" size="small" @change="handleSwingAngleSliderChange" />
+							</div>
+							<el-button :disabled="globeConfig.smartObliqueSwingAngle >= 45" color="#3c3c3c" icon="Plus" class="gimbal-pitch-btn" @click="changeSwingAngle(1)"></el-button>
 						</div>
 					</div>
 
@@ -429,6 +487,65 @@
 
 .num:hover {
 	text-decoration: underline;
+}
+
+.gsd-box {
+	padding: 14px 16px;
+}
+
+.gsd-block + .gsd-block {
+	margin-top: 16px;
+}
+
+.gsd-label {
+	margin-bottom: 8px;
+}
+
+.gsd-control {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.gsd-step {
+	flex: 0 0 42px;
+	width: 42px;
+	height: 26px;
+	margin: 0 !important;
+	padding: 0;
+	color: #fff;
+	font-size: 13px;
+}
+
+.gsd-value {
+	flex: 1;
+	display: flex;
+	align-items: baseline;
+	justify-content: center;
+	min-width: 0;
+	white-space: nowrap;
+}
+
+.gsd-num {
+	width: auto;
+	min-width: 52px;
+	font-size: 26px;
+	line-height: 1;
+}
+
+.gsd-unit {
+	margin-left: 4px;
+	font-size: 14px;
+}
+
+.gsd-input {
+	width: 72px;
+}
+
+.smart-oblique-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
 }
 
 .gimbal-pitch-box {

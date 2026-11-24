@@ -2,14 +2,15 @@
  * 功能名称：飞行器选择
  * 日    期：2025/05/30 15:41:25
  */
-import { defineComponent, ref, reactive, computed, onMounted, onUnmounted, Ref, PropType, nextTick, watch, ExtractPropTypes, SetupContext } from 'vue';
+import { defineComponent, ref, computed, onMounted, onUnmounted, ExtractPropTypes, SetupContext } from 'vue';
+import { ElMessage } from 'element-plus';
 import BaseInstance from '@/utils/BaseInstance';
 import gsap from 'gsap';
-import { id } from 'element-plus/es/locale';
 import { keyBindingSwitch } from '../utils/keyBinding';
+import { AIRCRAFT_SERIES, WAYLINE_KINDS, WaylineKindId, findSeries } from '../config/devices';
+import { getSelectedAircraft, selectAircraft } from '../config/selectedAircraft';
 // 一、Emits 类型定义
-// type EmitsType = ('clearRadioRow' | 'change' | 'delete' | 'addchild')[];
-type EmitsType = 'update:modelValue'[];
+type EmitsType = ('update:modelValue' | 'saved')[];
 
 // 二、Props 定义
 const propDefine = {
@@ -24,7 +25,7 @@ const propDefine = {
 export default defineComponent({
 	name: '',
 	components: {},
-	emits: ['update:modelValue'], // 例如: ['clearRadioRow', 'change', 'delete', 'addchild']
+	emits: ['update:modelValue', 'saved'],
 	props: propDefine,
 	setup(props, ctx) {
 		return new Instance(props, ctx);
@@ -45,12 +46,13 @@ export class Instance extends BaseInstance {
 		this.init();
 	}
 	private init() {
-		const name = sessionStorage.getItem('aircraftName')
+		const name = sessionStorage.getItem('aircraftName');
 		if (name) {
-			this.aircraftName.value = name
+			this.aircraftName.value = name;
 		}
-		// 初始化
-		// ToDo
+		const current = getSelectedAircraft();
+		this.activeSeriesId.value = current.seriesId;
+		this.activeModelId.value = current.id;
 		onMounted(() => {
 			this.show();
 		});
@@ -63,58 +65,34 @@ export class Instance extends BaseInstance {
 
 	// 响应属性 | ref、reactive、computed
 
-	activeAircraft = ref(1);
-
-	aircraftList = ref<any>([
-		{
-			id: 67,
-			name: '经纬 M30 系列',
-		},
-		{
-			id: 77,
-			name: 'Mavic 3 行业系列',
-		},
-		{
-			id: 91,
-			name: 'Matrice 3D 系列',
-		},
-		{
-			id: 99,
-			name: 'Matrice 4 行业系列',
-		},
-		{
-			id: 100,
-			name: 'Matrice 4D 系列',
-		},
-	]);
-
-	activeModel = ref(1);
-	modelList = ref<any>([
-		{
-			id: 1,
-			name: '经纬 M30',
-		},
-		{
-			id: 2,
-			name: '经纬 M30 T',
-		},
-	]);
-
-
-	aircraftName = ref('新建航线')
+	waylineKinds = WAYLINE_KINDS;
+	aircraftList = AIRCRAFT_SERIES;
+	activeWaylineKind = ref<WaylineKindId>('planar');
+	activeSeriesId = ref(100);
+	activeModelId = ref('m4td');
+	modelList = computed(() => findSeries(this.activeSeriesId.value)?.models ?? []);
+	aircraftName = ref('新建航线');
 
 	// 私有方法 | private 方法名() {}
 
 	// 响应式方法 | xxx = () => {}
 
-	/** 选择飞行器 */
-	changeAircraft = (item) => {
-		this.activeAircraft.value = item.id;
+	changeWaylineKind = (kindId: WaylineKindId) => {
+		this.activeWaylineKind.value = kindId;
+	};
+
+	/** 选择飞行器系列，型号切到该系列第一项 */
+	changeAircraft = (seriesId: number) => {
+		this.activeSeriesId.value = seriesId;
+		const models = findSeries(seriesId)?.models ?? [];
+		if (!models.some((item) => item.id === this.activeModelId.value) && models[0]) {
+			this.activeModelId.value = models[0].id;
+		}
 	};
 
 	/** 选择型号 */
-	changeModel = (item) => {
-		this.activeModel.value = item.id;
+	changeModel = (modelId: string) => {
+		this.activeModelId.value = modelId;
 	};
 
 	show = () => {
@@ -134,9 +112,16 @@ export class Instance extends BaseInstance {
 	};
 
 	handleSave = () => {
+		const kind = WAYLINE_KINDS.find((item) => item.id === this.activeWaylineKind.value);
+		if (!kind?.editable) {
+			ElMessage.warning('该航线绘制尚未接入，请先选择面状航线');
+			return;
+		}
+		selectAircraft(this.activeModelId.value);
 		sessionStorage.setItem('aircraftName', this.aircraftName.value);
+		this.ctx.emit('saved');
 		this.doClose();
-	}
+	};
 
 	//#endregion 业务逻辑 - xxx END
 }

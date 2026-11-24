@@ -3,6 +3,8 @@
  * 日    期：2026/07/29
  */
 import { computed, defineComponent, ExtractPropTypes, nextTick, onMounted, onUnmounted, PropType, ref, SetupContext, watchEffect } from 'vue';
+import { calculateGsdCentimeters, calculateHeightFromGsd, obliqueGsdScale } from '../config/cameraConfig';
+import { getSelectedAircraft } from '../config/selectedAircraft';
 import globeConfig, { PLANAR_EDIT_DEFAULTS, PLANAR_SPEED_HARD_MAX } from '../config/planarConfig';
 import BaseInstance from '@/utils/BaseInstance';
 
@@ -99,6 +101,9 @@ export class Instance extends BaseInstance {
 		return this.props.isObliqueMode;
 	}
 
+	showSmartObliqueSwitch = computed(() => this.isObliqueMode && getSelectedAircraft().supportsSmartOblique);
+	smartObliqueEnabled = computed(() => this.showSmartObliqueSwitch.value && globeConfig.smartObliqueEnable);
+
 	get photoTriggerOptions() {
 		return this.props.photoTriggerOptions as { label: string; value: string }[];
 	}
@@ -137,6 +142,61 @@ export class Instance extends BaseInstance {
 
 	//#region 业务逻辑 - 配置更新
 
+	showGsdInput = ref(false);
+	showObliqueGsdInput = ref(false);
+	gsdInput = ref('');
+	gsdText = computed(() => this.formatGsd(calculateGsdCentimeters(Number(globeConfig.lineHeight), getSelectedAircraft().wideCamera)));
+	obliqueGsdText = computed(() => {
+		const gsd = calculateGsdCentimeters(Number(globeConfig.lineHeight), getSelectedAircraft().wideCamera);
+		return this.formatGsd(gsd * obliqueGsdScale(Number(globeConfig.smartObliqueGimbalPitch)));
+	});
+
+	beginGsdInput = (oblique: boolean) => {
+		if (oblique) {
+			this.showObliqueGsdInput.value = true;
+			this.gsdInput.value = this.obliqueGsdText.value;
+			return;
+		}
+		this.showGsdInput.value = true;
+		this.gsdInput.value = this.gsdText.value;
+	};
+
+	applyGsdInput = (oblique: boolean) => {
+		this.showGsdInput.value = false;
+		this.showObliqueGsdInput.value = false;
+		const gsd = Number(this.gsdInput.value);
+		if (!Number.isFinite(gsd) || gsd <= 0) {
+			return;
+		}
+		this.commitGsd(gsd, oblique);
+	};
+
+	stepGsd = (delta: number, oblique: boolean) => {
+		this.showGsdInput.value = false;
+		this.showObliqueGsdInput.value = false;
+		const current = Number(oblique ? this.obliqueGsdText.value : this.gsdText.value);
+		const next = current + delta;
+		if (!Number.isFinite(next) || next <= 0) {
+			return;
+		}
+		this.commitGsd(next, oblique);
+	};
+
+	private commitGsd(gsd: number, oblique: boolean) {
+		const scale = oblique ? obliqueGsdScale(Number(globeConfig.smartObliqueGimbalPitch)) : 1;
+		const height = calculateHeightFromGsd(gsd / scale, getSelectedAircraft().wideCamera);
+		const nextHeight = Math.min(1500, Math.max(2, Math.round(height)));
+		if (nextHeight === Number(globeConfig.lineHeight)) {
+			return;
+		}
+		globeConfig.lineHeight = nextHeight;
+		this.ctx.emit('change');
+	};
+
+	private formatGsd(value: number): string {
+		return Number.isFinite(value) ? value.toFixed(2) : '--';
+	}
+
 	/** 修改航线高度并通知父组件重新规划 */
 	calclineHeight = (value: number) => {
 		this.showHeightInput.value = false;
@@ -165,6 +225,24 @@ export class Instance extends BaseInstance {
 		this.showSpeedInput.value = false;
 		const speed = Number(globeConfig.speed);
 		globeConfig.speed = Number.isFinite(speed) ? Math.min(PLANAR_SPEED_HARD_MAX, Math.max(1, speed)) : PLANAR_EDIT_DEFAULTS.speed;
+		this.ctx.emit('change');
+	};
+
+	toggleSmartOblique = () => {
+		this.ctx.emit('change');
+	};
+
+	changeSwingAngle = (delta: number) => {
+		const next = Number(globeConfig.smartObliqueSwingAngle) + delta;
+		globeConfig.smartObliqueSwingAngle = Math.min(45, Math.max(10, next));
+		this.ctx.emit('change');
+	};
+
+	handleSwingAngleSliderChange = (value: number | number[]) => {
+		if (Array.isArray(value)) {
+			return;
+		}
+		globeConfig.smartObliqueSwingAngle = Math.min(45, Math.max(10, Number(value)));
 		this.ctx.emit('change');
 	};
 

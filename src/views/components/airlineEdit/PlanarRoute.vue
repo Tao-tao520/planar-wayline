@@ -22,6 +22,9 @@
 					</el-button>
 				</el-upload>
 			</div>
+			<div class="wayline-edit-header-center" @click="openAircraftSelect">
+				<span>{{ aircraftLabel }}</span>
+			</div>
 		</div>
 
 		<div class="planar-content">
@@ -39,7 +42,7 @@
 	/>
 			<div class="wayMap planar-map" v-loading="isCalculating || isImporting" :element-loading-text="mapLoadingText">
 				<CesiumMap @loadMap="loadMainMap"></CesiumMap>
-				<div v-if="isObliqueMode && activeRouteSummary" class="route-switcher">
+				<div v-if="isObliqueMode && !isSmartOblique && activeRouteSummary" class="route-switcher">
 					<div class="route-switcher__tabs" role="tablist" aria-label="五向倾斜摄影航线">
 						<button
 							v-for="(route, index) in routeSummaries"
@@ -76,7 +79,7 @@
 			</div>
 		</div>
 	</div>
-	<AircraftSelect v-if="isAircraftSelectShow" v-model="isAircraftSelectShow"></AircraftSelect>
+	<AircraftSelect v-if="isAircraftSelectShow" v-model="isAircraftSelectShow" @saved="recalculateRoute"></AircraftSelect>
 	<SaveAirlineDialog
 		v-model="showSaveDialog"
 		:default-name="saveDialogDefaultName"

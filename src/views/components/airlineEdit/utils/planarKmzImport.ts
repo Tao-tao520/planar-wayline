@@ -45,6 +45,8 @@ export interface PlanarKmzImportResult {
 	photoTriggerMode?: PlanarKmzPhotoTriggerMode;
 	photoDistance?: number;
 	gimbalPitchDegrees?: number;
+	smartObliqueEnable?: boolean;
+	smartObliqueSwingAngle?: number;
 	routes: PlanarKmzImportedRoute[];
 	warnings: string[];
 }
@@ -95,6 +97,9 @@ export async function parsePlanarKmz(file: Blob): Promise<PlanarKmzImportResult>
 	const overlap = parseOverlap(templatePlacemark, templateType);
 	const lineAngle = parseLineAngle(templatePlacemark);
 	const templateGimbalPitch = parseNumber(findDirectChild(templatePlacemark, 'inclinedGimbalPitch'));
+	const smartObliqueEnable = readText(findDirectChild(templatePlacemark, 'smartObliqueEnable')) === '1';
+	const smartObliquePitch = parseNumber(findDirectChild(templatePlacemark, 'smartObliqueGimbalPitch'));
+	const smartObliqueSwingAngle = smartObliquePitch === undefined ? undefined : Math.min(45, Math.max(10, Math.abs(smartObliquePitch)));
 
 	const folders = findDirectChildren(waylineDocument, 'Folder');
 	const routes: PlanarKmzImportedRoute[] = [];
@@ -112,7 +117,10 @@ export async function parsePlanarKmz(file: Blob): Promise<PlanarKmzImportResult>
 	if (templateType === 'mapping2d' && routes.length !== 1) {
 		throw new Error('mapping2d 文件必须包含一组有效航线');
 	}
-	if (templateType === 'mapping3d' && routes.length !== 5) {
+	if (templateType === 'mapping3d' && smartObliqueEnable && routes.length !== 1) {
+		throw new Error('智能摆拍航线必须包含一组有效航线');
+	}
+	if (templateType === 'mapping3d' && !smartObliqueEnable && routes.length !== 5) {
 		throw new Error('mapping3d 文件必须包含五组有效航线');
 	}
 	if (speed === undefined) {
@@ -149,6 +157,8 @@ export async function parsePlanarKmz(file: Blob): Promise<PlanarKmzImportResult>
 		photoTriggerMode,
 		photoDistance,
 		gimbalPitchDegrees: gimbalPitch,
+		smartObliqueEnable,
+		smartObliqueSwingAngle,
 		routes,
 		warnings,
 	};

@@ -11,13 +11,15 @@ import AircraftSelect from './components/AircraftSelect.vue';
 import CesiumMap from './components/CesiumMap.vue';
 import SaveAirlineDialog from './components/SaveAirlineDialog.vue';
 import PlanarRouteConfigPanel from './components/PlanarRouteConfigPanel.vue';
-import { calculateCameraFieldOfView, M3TD_WIDE_CAMERA } from './config/cameraConfig';
+import { fieldOfViewFromLens } from './config/cameraConfig';
+import { getSelectedAircraft, hasStoredAircraft } from './config/selectedAircraft';
 import globeConfig, { applyFlightSpeedLimit, PLANAR_EDIT_DEFAULTS } from './config/planarConfig';
 import { drawPolygon, movePolygon, PolygonDrawingResult } from './utils/drawPolygon';
 import { calculateFiveDirectionRoutes, FiveDirectionRouteKey, FiveDirectionRoutePlan } from './utils/obliqueRoute';
 import { buildPlanarKmz, PlanarKmzRoute } from './utils/planarKmzExport';
 import { addStartPoint, calculateArea, hideStartPointTip, setStartPointCursor } from './utils/planarLine';
 import { roundPlanarRouteSegments } from './utils/planarRouteTurn';
+import { buildSmartObliqueRoute } from './utils/smartObliquePath';
 import { calculateMaximumLineSpacing, calculatePhotoDistance, calculatePlanarRoute, LocalPoint, PlanarRouteSegment } from './utils/wayLineCalc';
 import {
 	calculateCartesianRouteLength,
@@ -95,12 +97,15 @@ export class Instance extends BaseInstance {
 	// 全局属性
 	globeConfig = globeConfig;
 	flyPointStatus = ref(false);
-	isAircraftSelectShow = ref(false);
+	isAircraftSelectShow = ref(!hasStoredAircraft());
+	aircraftLabel = computed(() => `面状航线 · ${getSelectedAircraft().name}`);
 	isCalculating = ref(false);
 	hasRoute = ref(false);
 	activeRouteIndex = ref(0);
 	routeSummaries = ref<RouteSummary[]>([]);
-	curWaylineType = ref('经纬 M30 T');
+	openAircraftSelect = () => {
+		this.isAircraftSelectShow.value = true;
+	};
 	photoTriggerOptions = [
 		{ label: '等时间拍照', value: 'time' },
 		{ label: '等距拍照', value: 'distance' },
@@ -108,6 +113,7 @@ export class Instance extends BaseInstance {
 	entityObjPolygonObj: PolygonDrawingResult | null = null;
 	drawDataSource: Cesium.CustomDataSource | null = null;
 	isObliqueMode = computed(() => Number(globeConfig.climbType) === 2);
+	isSmartOblique = computed(() => this.isObliqueMode.value && globeConfig.smartObliqueEnable && getSelectedAircraft().supportsSmartOblique);
 	isImporting = ref(false);
 	mapLoadingText = computed(() => (this.isImporting.value ? '航线导入中' : '航线计算中'));
 	showSaveDialog = ref(false);
@@ -427,7 +433,10 @@ export class Instance extends BaseInstance {
 		}
 		globeConfig.climbType = value;
 		if (value === 2) {
+			globeConfig.smartObliqueEnable = getSelectedAircraft().supportsSmartOblique;
 			this.lineAngleHandler.isLineAngleManual = false;
+		} else {
+			globeConfig.smartObliqueEnable = false;
 		}
 		this.activeRouteIndex.value = 0;
 		void this.recalculateRoute();
@@ -536,8 +545,13 @@ export class Instance extends BaseInstance {
 			});
 		}
 
+		const aircraft = getSelectedAircraft();
 		return await buildPlanarKmz({
 			isOblique: this.isObliqueMode.value,
+			smartOblique: this.isSmartOblique.value,
+			droneEnumValue: aircraft.droneEnumValue,
+			droneSubEnumValue: aircraft.droneSubEnumValue,
+			payloadEnumValue: aircraft.payloadEnumValue,
 			polygonPositions,
 			takeoffPosition: globeConfig.flyPosition,
 			routes,
@@ -548,7 +562,7 @@ export class Instance extends BaseInstance {
 			transitionalSpeed: Number(globeConfig.takeoffSpeed),
 			overlapW: Number(globeConfig.overlapW),
 			overlapH: Number(globeConfig.overlapH),
-			gimbalPitchDegrees: Number(globeConfig.smartObliqueGimbalPitch),
+			gimbalPitchDegrees: this.isSmartOblique.value ? -Number(globeConfig.smartObliqueSwingAngle) : Number(globeConfig.smartObliqueGimbalPitch),
 			photoTriggerMode: globeConfig.photoTriggerMode,
 			photoDistance: this.photoDistance,
 		});
@@ -584,7 +598,7 @@ export class Instance extends BaseInstance {
 				throw new Error('航线高度不足，无法规划');
 			}
 
-			const cameraFieldOfView = calculateCameraFieldOfView(M3TD_WIDE_CAMERA);
+			const cameraFieldOfView = fieldOfViewFromLens(getSelectedAircraft().wideCamera);
 			const crossTrackFov = cameraFieldOfView.horizontalDegrees;
 			const halfFovRadians = (crossTrackFov * Math.PI) / 360;
 			const footprintWidth = 2 * minimumGroundClearance * Math.tan(halfFovRadians);
@@ -596,7 +610,7 @@ export class Instance extends BaseInstance {
 			applyFlightSpeedLimit(photoDistance, syncToSuggested);
 			const takeoffPoint = globeConfig.flyPosition ? frame.toLocal(globeConfig.flyPosition) : undefined;
 			let localRoutes: FiveDirectionRoutePlan[];
-			if (this.isObliqueMode.value) {
+			if (this.isObliqueMode.value && !this.isSmartOblique.value) {
 			const manualAngle = this.lineAngleHandler.isLineAngleManual ? Number(globeConfig.lineAngle) : undefined;
 			const result = calculateFiveDirectionRoutes({
 				polygon: localPolygon,
@@ -614,13 +628,24 @@ export class Instance extends BaseInstance {
 			globeConfig.spacing = Number(result.lineSpacing.toFixed(2));
 		} else {
 			const manualAngle = this.lineAngleHandler.isLineAngleManual ? Number(globeConfig.lineAngle) : undefined;
-			const plan = calculatePlanarRoute({
+			const swingPitch = Number(globeConfig.smartObliqueSwingAngle);
+			const orthoPlan = calculatePlanarRoute({
 				polygon: localPolygon,
 				maximumLineSpacing,
 				footprintWidth,
 				takeoffPoint,
 				manualAngle,
 			});
+			const plan = this.isSmartOblique.value
+				? buildSmartObliqueRoute({
+						polygon: localPolygon,
+						angle: orthoPlan.angle,
+						lineSpacing: orthoPlan.lineSpacing,
+						heightMeters: minimumGroundClearance,
+						swingPitchDegrees: swingPitch,
+						takeoffPoint,
+					})
+				: orthoPlan;
 			if (!this.lineAngleHandler.isLineAngleManual) {
 				globeConfig.lineAngle = Number(plan.angle.toFixed(1));
 			}
@@ -630,7 +655,7 @@ export class Instance extends BaseInstance {
 						id: 1,
 						key: 'nadir',
 						label: '俯拍',
-						gimbalPitchDegrees: -90,
+						gimbalPitchDegrees: this.isSmartOblique.value ? -Number(globeConfig.smartObliqueSwingAngle) : -90,
 						segments: plan.segments,
 					},
 				];
@@ -707,7 +732,7 @@ export class Instance extends BaseInstance {
 					coordinates: flattenRouteCoordinates(previewConnection.segments),
 					totalLength,
 					climbLength: exportConnection.climbLength,
-					photoCount: calculateRoutePhotoCount(rawCartesianSegments, photoDistance, this.isObliqueMode.value),
+					photoCount: calculateRoutePhotoCount(rawCartesianSegments, photoDistance, this.isObliqueMode.value && !this.isSmartOblique.value),
 				});
 			}
 			if (plannedRoutes.length === 0) {

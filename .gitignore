@@ -1,6 +1,7 @@
 node_modules
 dist
 *.local
+research/fh2/
 .DS_Store
 visualizer.html
 src/types/auto-imports.d.ts
