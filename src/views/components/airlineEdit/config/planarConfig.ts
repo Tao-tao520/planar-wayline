@@ -70,7 +70,7 @@ const defaultConfig: PlanarConfig = {
 	...PLANAR_EDIT_DEFAULTS,
 	area: 0, // 面积
 	lineLength: 0, // 航线长度
-	takeoffClimbLength: 0, // 起飞点垂直爬升总长度
+	takeoffClimbLength: 0, // 起飞点到首航点的引入长度，按过渡速度计时
 	flyTime: '0', // 航线时间
 	photoCount: 0, // 照片总数
 	linesArrs: [], // 航线
@@ -83,14 +83,15 @@ const globeConfig = reactive<PlanarConfig>(deepClone(defaultConfig));
 
 watchEffect(() => {
 	const length = Math.max(0, Number(globeConfig.lineLength));
-	const climbLength = Math.min(length, Math.max(0, Number(globeConfig.takeoffClimbLength)));
+	const climbLength = Math.max(0, Number(globeConfig.takeoffClimbLength));
 	const speed = Math.max(0.1, Number(globeConfig.speed));
 	const takeoffSpeed = Math.max(0.1, Number(globeConfig.takeoffSpeed));
 
-	if (length == 0) {
+	if (length == 0 && climbLength == 0) {
 		globeConfig.flyTime = '0';
 	} else {
-		const seconds = climbLength / takeoffSpeed + (length - climbLength) / speed;
+		// 航线本体按航线速度，起飞点到首航点整段按过渡速度，两段相加。
+		const seconds = climbLength / takeoffSpeed + length / speed;
 		globeConfig.flyTime = formatSeconds(seconds);
 	}
 });
@@ -99,8 +100,10 @@ function formatSeconds(seconds: number): string {
 	const hours = Math.floor(seconds / 3600);
 	const minutes = Math.floor((seconds % 3600) / 60);
 	const secs = Math.round(seconds % 60);
-
-	return `${hours} h ${minutes} m ${secs} s`;
+	if (hours > 0) {
+		return `${hours} h ${minutes} m ${secs} s`;
+	}
+	return `${minutes} m ${secs} s`;
 }
 
 /**

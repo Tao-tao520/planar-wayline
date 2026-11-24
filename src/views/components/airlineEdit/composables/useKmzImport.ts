@@ -390,7 +390,8 @@ export class KmzImportHandler {
 			const previewSegments = this.createRoundedPreviewFromCartesian(prepared.exportSegments);
 			const exportConnection = this.ctx.connectTakeoffToFirstWaypoint(prepared.exportSegments);
 			const previewConnection = this.ctx.connectTakeoffToFirstWaypoint(previewSegments);
-			const totalLength = this.calculateCartesianRouteLength(exportConnection.segments);
+			const missionLength = this.calculateCartesianRouteLength(prepared.exportSegments);
+			const approachLength = Math.max(0, this.calculateCartesianRouteLength(exportConnection.segments) - missionLength);
 			plannedRoutes.push({
 				id: routeIndex + 1,
 				key: this.getImportedRouteKey(routeIndex),
@@ -400,9 +401,9 @@ export class KmzImportHandler {
 				segments: previewConnection.segments,
 				exportSegments: prepared.exportSegments,
 				coordinates: this.ctx.flattenRouteCoordinates(previewConnection.segments),
-				totalLength,
-				climbLength: exportConnection.climbLength,
-				photoCount: this.ctx.calculateRoutePhotoCount(prepared.exportSegments, config.photoDistance, imported.templateType === 'mapping3d' && !imported.smartObliqueEnable),
+				totalLength: missionLength,
+				climbLength: approachLength,
+				photoCount: this.ctx.calculateRoutePhotoCount(prepared.exportSegments, config.photoDistance, true),
 			});
 		}
 

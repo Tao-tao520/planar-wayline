@@ -24,12 +24,12 @@ interface RouteConnectionResult {
 }
 
 /**
- * 按起飞速度和全局速度计算单组航线预计时长。
+ * 航线本体按航线速度，起飞点到首航点整段按过渡速度。
  */
-export function calculateRouteDuration(totalLength: number, climbLength: number): number {
+export function calculateRouteDuration(routeLength: number, approachLength: number): number {
 	const takeoffSpeed = Math.max(0.1, Number(globeConfig.takeoffSpeed));
 	const flightSpeed = Math.max(0.1, Number(globeConfig.speed));
-	return climbLength / takeoffSpeed + Math.max(0, totalLength - climbLength) / flightSpeed;
+	return Math.max(0, approachLength) / takeoffSpeed + Math.max(0, routeLength) / flightSpeed;
 }
 
 /**

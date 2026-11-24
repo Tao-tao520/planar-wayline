@@ -720,7 +720,8 @@ export class Instance extends BaseInstance {
 				// 圆角仅用于地图预览；导出使用原始折线航点，由司空 coordinateTurn 在转弯处平滑过点。
 				const exportConnection = connectTakeoffToFirstWaypoint(rawCartesianSegments);
 				const previewConnection = connectTakeoffToFirstWaypoint(roundedCartesianSegments);
-				const totalLength = calculateCartesianRouteLength(exportConnection.segments);
+				const missionLength = calculateCartesianRouteLength(rawCartesianSegments);
+				const approachLength = Math.max(0, calculateCartesianRouteLength(exportConnection.segments) - missionLength);
 				plannedRoutes.push({
 					id: localRoute.id,
 					key: localRoute.key,
@@ -730,9 +731,9 @@ export class Instance extends BaseInstance {
 					segments: previewConnection.segments,
 					exportSegments: rawCartesianSegments,
 					coordinates: flattenRouteCoordinates(previewConnection.segments),
-					totalLength,
-					climbLength: exportConnection.climbLength,
-					photoCount: calculateRoutePhotoCount(rawCartesianSegments, photoDistance, this.isObliqueMode.value && !this.isSmartOblique.value),
+					totalLength: missionLength,
+					climbLength: approachLength,
+					photoCount: calculateRoutePhotoCount(rawCartesianSegments, photoDistance, true),
 				});
 			}
 			if (plannedRoutes.length === 0) {
@@ -802,7 +803,7 @@ export class Instance extends BaseInstance {
 			routeCoordinates.push([...plannedRoutes[routeIndex].coordinates]);
 		}
 		const activeRoute = plannedRoutes[this.activeRouteIndex.value];
-		globeConfig.lineLength = Math.round(totalLength);
+		globeConfig.lineLength = Math.floor(totalLength * 10 + 1e-6) / 10;
 		globeConfig.takeoffClimbLength = totalClimbLength;
 		globeConfig.photoCount = totalPhotoCount;
 		globeConfig.routeLinesArrs = routeCoordinates;
