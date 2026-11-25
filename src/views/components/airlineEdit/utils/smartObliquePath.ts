@@ -1,6 +1,8 @@
 /**
  * 智能摆拍航线。
- * 每条扫描线先按自己的截面裁到测区边上，再沿航向外扩。
+ * 凸测区把每条边沿外法线推出后再做半平面裁切。
+ * 凹测区不能这么做，所有边一起裁只会留下凸核，航线缩在测区中间。
+ * 凹测区按扫描线和边界的真实交点分成若干段，再沿航向外扩。
  * 外扩距离来自司空同一组对比：斜视中心点要落到边界上，并再留 40 米转弯引入。
  * 矩形各条截面一样宽，外扩不收回；一头宽一头窄时，窄的一侧外扩更长，宽的一侧只留引入。
  */
@@ -63,33 +65,9 @@ export function buildSmartObliqueRoute(options: SmartObliqueRouteOptions): Plana
 	}
 
 	const crosses = scanCrossPositions(crossMin, crossMax, options.lineSpacing, crossReach);
-	const insideChords = crosses
-		.map((cross) => clipScanChord(edges, cross))
-		.filter((chord): chord is ScanChord => chord !== null && chord.inside);
-	const insideWidths = insideChords.map((chord) => chord.width);
-	const minWidth = insideWidths.length > 0 ? Math.min(...insideWidths) : 0;
-	const maxWidth = insideWidths.length > 0 ? Math.max(...insideWidths) : 0;
-	const tapered = maxWidth - minWidth > options.lineSpacing * 0.5;
-	let wideCross = (crossMin + crossMax) / 2;
-	let widest = -1;
-	for (let index = 0; index < insideChords.length; index++) {
-		if (insideChords[index].width > widest) {
-			widest = insideChords[index].width;
-			wideCross = insideChords[index].cross;
-		}
-	}
-	const narrowCross = Math.abs(crossMin - wideCross) > Math.abs(crossMax - wideCross) ? crossMin : crossMax;
-	const chords: ScanChord[] = [];
-	for (let index = 0; index < crosses.length; index++) {
-		const cross = crosses[index];
-		const inside = insideChords.find((chord) => Math.abs(chord.cross - cross) < 0.01);
-		const probe = inside ?? { cross, alongMin: 0, alongMax: 0, lowEdge: edges[0], highEdge: edges[0], inside: false, width: 0 };
-		const large = usesLargeMargin(probe, tapered, minWidth, maxWidth, wideCross, narrowCross);
-		const chord = offsetScanChord(edges, cross, large, lookDistance);
-		if (chord) {
-			chords.push(chord);
-		}
-	}
+	const chords = isConvexPolygon(edges)
+		? buildConvexChords(edges, crosses, options.lineSpacing, lookDistance, crossMin, crossMax)
+		: buildConcaveChords(edges, crosses, lookDistance, crossMin, crossMax);
 
 	const candidates = [
 		orderLines(chords, false, false),
@@ -191,21 +169,43 @@ function scanCrossPositions(crossMin: number, crossMax: number, lineSpacing: num
 }
 
 function orderLines(chords: ScanChord[], reverseRows: boolean, reverseFirst: boolean): OrderedLine[] {
-	const indexes = chords.map((_, index) => index);
+	const rows = groupChordsByCross(chords);
 	if (reverseRows) {
-		indexes.reverse();
+		rows.reverse();
 	}
 	const progressingPositive = !reverseRows;
-	return indexes.map((sourceIndex, orderIndex) => {
-		const flyPositive = orderIndex % 2 === 0 ? !reverseFirst : reverseFirst;
-		const firstHalf = orderIndex < indexes.length / 2;
-		return {
-			chord: chords[sourceIndex],
-			flyPositive,
-			wantPositiveCross: firstHalf ? progressingPositive : !progressingPositive,
-			outerPair: orderIndex < 2 || orderIndex >= indexes.length - 2,
-		};
-	});
+	const lines: OrderedLine[] = [];
+	for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+		const flyPositive = rowIndex % 2 === 0 ? !reverseFirst : reverseFirst;
+		const firstHalf = rowIndex < rows.length / 2;
+		const ordered = flyPositive ? rows[rowIndex] : [...rows[rowIndex]].reverse();
+		for (let chordIndex = 0; chordIndex < ordered.length; chordIndex++) {
+			lines.push({
+				chord: ordered[chordIndex],
+				flyPositive,
+				wantPositiveCross: firstHalf ? progressingPositive : !progressingPositive,
+				outerPair: rowIndex < 2 || rowIndex >= rows.length - 2,
+			});
+		}
+	}
+	return lines;
+}
+
+function groupChordsByCross(chords: ScanChord[]): ScanChord[][] {
+	const rows: ScanChord[][] = [];
+	for (let index = 0; index < chords.length; index++) {
+		const chord = chords[index];
+		const last = rows[rows.length - 1];
+		if (last && Math.abs(last[0].cross - chord.cross) < 0.01) {
+			last.push(chord);
+		} else {
+			rows.push([chord]);
+		}
+	}
+	for (let index = 0; index < rows.length; index++) {
+		rows[index].sort((left, right) => left.alongMin - right.alongMin);
+	}
+	return rows;
 }
 
 function firstPointDistance(options: SmartObliqueRouteOptions, lines: OrderedLine[]): number {
@@ -215,6 +215,253 @@ function firstPointDistance(options: SmartObliqueRouteOptions, lines: OrderedLin
 	const line = lines[0];
 	const startAlong = line.flyPositive ? line.chord.alongMin : line.chord.alongMax;
 	return distance(options.takeoffPoint, restore(startAlong, line.chord.cross, options.angle));
+}
+
+function isConvexPolygon(edges: PolygonEdge[]): boolean {
+	for (let index = 0; index < edges.length; index++) {
+		const next = edges[(index + 1) % edges.length];
+		const turn = edges[index].deltaAlong * next.deltaCross - edges[index].deltaCross * next.deltaAlong;
+		if (turn < -1e-2) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * 凸测区沿用半平面外扩。矩形和一头窄一头宽的三角形都是在这条路径上对过司空的。
+ */
+function buildConvexChords(
+	edges: PolygonEdge[],
+	crosses: number[],
+	lineSpacing: number,
+	lookDistance: number,
+	crossMin: number,
+	crossMax: number,
+): ScanChord[] {
+	const insideChords = crosses
+		.map((cross) => clipScanChord(edges, cross))
+		.filter((chord): chord is ScanChord => chord !== null && chord.inside);
+	const insideWidths = insideChords.map((chord) => chord.width);
+	const minWidth = insideWidths.length > 0 ? Math.min(...insideWidths) : 0;
+	const maxWidth = insideWidths.length > 0 ? Math.max(...insideWidths) : 0;
+	const tapered = maxWidth - minWidth > lineSpacing * 0.5;
+	let wideCross = (crossMin + crossMax) / 2;
+	let widest = -1;
+	for (let index = 0; index < insideChords.length; index++) {
+		if (insideChords[index].width > widest) {
+			widest = insideChords[index].width;
+			wideCross = insideChords[index].cross;
+		}
+	}
+	const narrowCross = Math.abs(crossMin - wideCross) > Math.abs(crossMax - wideCross) ? crossMin : crossMax;
+	const chords: ScanChord[] = [];
+	for (let index = 0; index < crosses.length; index++) {
+		const cross = crosses[index];
+		const inside = insideChords.find((chord) => Math.abs(chord.cross - cross) < 0.01);
+		const probe = inside ?? { cross, alongMin: 0, alongMax: 0, lowEdge: edges[0], highEdge: edges[0], inside: false, width: 0 };
+		const large = usesLargeMargin(probe, tapered, minWidth, maxWidth, wideCross, narrowCross);
+		const chord = offsetScanChord(edges, cross, large, lookDistance);
+		if (chord) {
+			chords.push(chord);
+		}
+	}
+	return chords;
+}
+
+/**
+ * 凹测区一条扫描线可能进出多次。只保留真正落在测区里的各段，再按端点所在的边外扩。
+ * 测区外侧、斜视还能照到的扫描线，用外扩后的边界补上。
+ */
+function buildConcaveChords(
+	edges: PolygonEdge[],
+	crosses: number[],
+	lookDistance: number,
+	crossMin: number,
+	crossMax: number,
+): ScanChord[] {
+	const insideRows = crosses.map((cross) => clipScanChords(edges, cross));
+	let alongMin = Number.POSITIVE_INFINITY;
+	let alongMax = Number.NEGATIVE_INFINITY;
+	for (let index = 0; index < edges.length; index++) {
+		alongMin = Math.min(alongMin, edges[index].along, edges[index].along + edges[index].deltaAlong);
+		alongMax = Math.max(alongMax, edges[index].along, edges[index].along + edges[index].deltaAlong);
+	}
+	const chordLimit = alongMax - alongMin + 20 * lookDistance + 4 * TURN_LEAD_METERS;
+	const offsetEdges = buildOffsetEdges(edges, true, lookDistance);
+	const chords: ScanChord[] = [];
+	for (let index = 0; index < crosses.length; index++) {
+		const cross = crosses[index];
+		const inside = insideRows[index];
+		if (inside.length > 0) {
+			const expanded = clipScanChords(offsetEdges, cross);
+			for (let chordIndex = 0; chordIndex < inside.length; chordIndex++) {
+				chords.push(fitChordToOffset(inside, chordIndex, expanded, lookDistance));
+			}
+			continue;
+		}
+		// 凹口内部没有交点，不能补一条横跨缺口的航线。只有测区外侧的斜视航线才外扩。
+		if (cross >= crossMin - 0.01 && cross <= crossMax + 0.01) {
+			continue;
+		}
+		const outside = clipScanChords(offsetEdges, cross);
+		for (let chordIndex = 0; chordIndex < outside.length; chordIndex++) {
+			const chord = outside[chordIndex];
+			if (chord.alongMax - chord.alongMin > chordLimit) {
+				continue;
+			}
+			chords.push({ ...chord, cross, inside: false });
+		}
+	}
+	return chords;
+}
+
+function fitChordToOffset(inside: ScanChord[], chordIndex: number, expanded: ScanChord[], lookDistance: number): ScanChord {
+	const chord = inside[chordIndex];
+	const midpoint = (chord.alongMin + chord.alongMax) / 2;
+	const previous = inside[chordIndex - 1];
+	const next = inside[chordIndex + 1];
+	const gapMin = previous ? (previous.alongMax + chord.alongMin) / 2 : Number.NEGATIVE_INFINITY;
+	const gapMax = next ? (chord.alongMax + next.alongMin) / 2 : Number.POSITIVE_INFINITY;
+	const container = expanded.find((item) => item.alongMin - 1 <= midpoint && midpoint <= item.alongMax + 1);
+	const fallback = extendChord(chord, true, lookDistance);
+	const rawMin = container ? Math.min(container.alongMin, chord.alongMin) : fallback.alongMin;
+	const rawMax = container ? Math.max(container.alongMax, chord.alongMax) : fallback.alongMax;
+	// 和航向太平的边会把交点沿航向推出很远，外扩限制在大约两个斜视距离内。
+	const cap = lookDistance * 2 + TURN_LEAD_METERS;
+	return {
+		...chord,
+		alongMin: Math.max(rawMin, gapMin, chord.alongMin - cap),
+		alongMax: Math.min(rawMax, gapMax, chord.alongMax + cap),
+	};
+}
+
+function extendChord(chord: ScanChord, large: boolean, lookDistance: number): ScanChord {
+	return {
+		...chord,
+		alongMin: chord.alongMin - alongExtension(chord.lowEdge, large, lookDistance),
+		alongMax: chord.alongMax + alongExtension(chord.highEdge, large, lookDistance),
+	};
+}
+
+function alongExtension(edge: PolygonEdge, large: boolean, lookDistance: number): number {
+	const length = Math.hypot(edge.deltaAlong, edge.deltaCross) || 1;
+	const sinPhi = Math.abs(edge.deltaCross) / length;
+	// 和航向几乎平行的边只约束左右范围，不能拿它把航线沿航向拉出几百米。
+	if (sinPhi < 0.2) {
+		return TURN_LEAD_METERS;
+	}
+	return perpendicularMargin(edge, large, lookDistance) / sinPhi;
+}
+
+function perpendicularMargin(edge: PolygonEdge, large: boolean, lookDistance: number): number {
+	const length = Math.hypot(edge.deltaAlong, edge.deltaCross) || 1;
+	const sinPhi = Math.abs(edge.deltaCross) / length;
+	const cosPhi = Math.abs(edge.deltaAlong) / length;
+	const yaw = (FORWARD_YAW_DEGREES * Math.PI) / 180;
+	if (sinPhi < 0.2) {
+		return large ? lookDistance * Math.sin(yaw) : TURN_LEAD_METERS;
+	}
+	return large ? lookDistance * Math.cos(yaw) * (1 + cosPhi) + TURN_LEAD_METERS * sinPhi : TURN_LEAD_METERS;
+}
+
+/**
+ * 扫描线和多边形各边的交点，按沿线位置配成测区内部的若干段。
+ */
+function clipScanChords(edges: PolygonEdge[], cross: number): ScanChord[] {
+	const hits: { along: number; edge: PolygonEdge }[] = [];
+	for (let index = 0; index < edges.length; index++) {
+		const edge = edges[index];
+		const endCross = edge.cross + edge.deltaCross;
+		const crosses = (edge.cross <= cross && endCross > cross) || (endCross <= cross && edge.cross > cross);
+		if (!crosses || Math.abs(edge.deltaCross) <= 1e-8) {
+			continue;
+		}
+		const ratio = (cross - edge.cross) / edge.deltaCross;
+		hits.push({ along: edge.along + edge.deltaAlong * ratio, edge });
+	}
+	hits.sort((left, right) => left.along - right.along);
+	const chords: ScanChord[] = [];
+	for (let index = 0; index + 1 < hits.length; index += 2) {
+		const alongMin = hits[index].along;
+		const alongMax = hits[index + 1].along;
+		if (alongMax - alongMin <= 1) {
+			continue;
+		}
+		chords.push({
+			cross,
+			alongMin,
+			alongMax,
+			lowEdge: hits[index].edge,
+			highEdge: hits[index + 1].edge,
+			inside: true,
+			width: alongMax - alongMin,
+		});
+	}
+	return chords;
+}
+
+function buildOffsetEdges(edges: PolygonEdge[], large: boolean, lookDistance: number): PolygonEdge[] {
+	const shifted = edges.map((edge) => shiftEdge(edge, perpendicularMargin(edge, large, lookDistance)));
+	const points: ProjectedPoint[] = [];
+	for (let index = 0; index < edges.length; index++) {
+		const previousIndex = (index - 1 + edges.length) % edges.length;
+		const turn = edges[previousIndex].deltaAlong * edges[index].deltaCross - edges[previousIndex].deltaCross * edges[index].deltaAlong;
+		if (turn >= -1e-2) {
+			const hit = intersectLines(shifted[previousIndex], shifted[index]);
+			if (hit) {
+				points.push(hit);
+				continue;
+			}
+		}
+		const previous = shifted[previousIndex];
+		points.push({ along: previous.along + previous.deltaAlong, cross: previous.cross + previous.deltaCross });
+		points.push({ along: shifted[index].along, cross: shifted[index].cross });
+	}
+	return buildEdges(dedupeProjectedPoints(points));
+}
+
+function shiftEdge(edge: PolygonEdge, margin: number): PolygonEdge {
+	const length = Math.hypot(edge.deltaAlong, edge.deltaCross) || 1;
+	return {
+		along: edge.along + (edge.deltaCross / length) * margin,
+		cross: edge.cross - (edge.deltaAlong / length) * margin,
+		deltaAlong: edge.deltaAlong,
+		deltaCross: edge.deltaCross,
+	};
+}
+
+function intersectLines(first: PolygonEdge, second: PolygonEdge): ProjectedPoint | null {
+	const determinant = first.deltaAlong * second.deltaCross - first.deltaCross * second.deltaAlong;
+	if (Math.abs(determinant) < 1e-8) {
+		return null;
+	}
+	const deltaAlong = second.along - first.along;
+	const deltaCross = second.cross - first.cross;
+	const scale = (deltaAlong * second.deltaCross - deltaCross * second.deltaAlong) / determinant;
+	return {
+		along: first.along + scale * first.deltaAlong,
+		cross: first.cross + scale * first.deltaCross,
+	};
+}
+
+function dedupeProjectedPoints(points: ProjectedPoint[]): ProjectedPoint[] {
+	const result: ProjectedPoint[] = [];
+	for (let index = 0; index < points.length; index++) {
+		const point = points[index];
+		const previous = result[result.length - 1];
+		if (!previous || Math.hypot(point.along - previous.along, point.cross - previous.cross) > 0.05) {
+			result.push(point);
+		}
+	}
+	if (result.length > 1) {
+		const first = result[0];
+		const last = result[result.length - 1];
+		if (Math.hypot(first.along - last.along, first.cross - last.cross) <= 0.05) {
+			result.pop();
+		}
+	}
+	return result;
 }
 
 /**
